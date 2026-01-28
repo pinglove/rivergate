@@ -1,0 +1,11 @@
+cd /var/www/rivergate.app   # или твой путь
+git pull
+composer install --no-dev --optimize-autoloader
+php artisan migrate --force
+php artisan optimize:clear
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+php -v
+php artisan --version
+php artisan optimize:clear
