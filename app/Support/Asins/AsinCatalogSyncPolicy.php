@@ -17,7 +17,7 @@ class AsinCatalogSyncPolicy
      * Через сколько часов после ERROR
      * можно разрешить новый запуск
      */
-    public const ERROR_COOLDOWN_HOURS = 1;
+    public const ERROR_COOLDOWN_HOURS = 0;
 
     /**
      * Статусы, которые считаются "активной синхронизацией"
