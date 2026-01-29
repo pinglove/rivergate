@@ -11,7 +11,7 @@ class AsinCatalogSyncPolicy
      * Через сколько часов после УСПЕШНОЙ синхронизации
      * можно запускать новую
      */
-    public const SUCCESS_COOLDOWN_HOURS = 1;
+    public const SUCCESS_COOLDOWN_HOURS = 12;
 
     /**
      * Через сколько часов после ERROR
@@ -62,8 +62,9 @@ class AsinCatalogSyncPolicy
             ->first();
 
         if ($lastCompleted) {
-            $nextAllowedAt = Carbon::parse($lastCompleted->updated_at)
+            $nextAllowedAt = Carbon::parse($lastCompleted->finished_at)
                 ->addHours(self::SUCCESS_COOLDOWN_HOURS);
+
 
             if (now()->lessThan($nextAllowedAt)) {
                 return false;

@@ -13,7 +13,7 @@ use App\Models\Amazon\Asins\AsinListingSyncImport;
 class SyncAsinListingDispatcher extends Command
 {
     protected $signature = 'asins:dispatch-listing-sync
-        {--limit=50 : Max sync jobs per run}
+        {--limit=250 : Max sync jobs per run}
         {--debug : Debug output}';
 
     protected $description = 'Dispatcher for ASIN listing sync (request → import)';

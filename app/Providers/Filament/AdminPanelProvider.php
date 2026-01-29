@@ -8,7 +8,6 @@ use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
-use Filament\Navigation\MenuItem;
 use Filament\Pages;
 use Filament\Panel;
 use Filament\PanelProvider;
@@ -21,19 +20,37 @@ use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 
+use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
+
 class AdminPanelProvider extends PanelProvider
 {
     public function panel(Panel $panel): Panel
     {
         return $panel
             ->default()
+
+            // 🔴 СНАЧАЛА идентификация панели
             ->id('admin')
             ->path('dashboard')
             ->login()
             ->profile()
 
+            // 🔴 ТОЛЬКО ПОТОМ плагины
+            ->plugins([
+                FilamentShieldPlugin::make(),
+            ])
+
             ->colors([
                 'primary' => Color::Amber,
+            ])
+
+            // ✅ Порядок групп в sidebar (без sort/order)
+            ->navigationGroups([
+                'Amazon',
+                'Logs',
+                'Local settings',
+                'System',
+                'Filament Shield',
             ])
 
             // ⬅ SIDEBAR
@@ -56,73 +73,6 @@ class AdminPanelProvider extends PanelProvider
                 Widgets\AccountWidget::class,
                 Widgets\FilamentInfoWidget::class,
             ])
-
-            /*
-            // 👤 USER MENU (GLOBAL)
-            ->userMenuItems(array_merge(
-
-                    
-                // ---------- SETTINGS ----------
-                [
-                    MenuItem::make()
-                        ->label('Settings')
-                        ->icon('heroicon-o-cog-6-tooth')
-                        ->url(fn () => Marketplaces::getUrl()),
-
-                    MenuItem::make()->label('—'),
-
-                    MenuItem::make()
-                        ->label(fn () => 'Marketplace: ' . strtoupper(session('active_marketplace', '—')))
-                        ->icon('heroicon-o-globe-alt'),
-                ],
-
-                // ---------- MARKETPLACE SWITCH ----------
-                    
-                collect(array_keys(config('amazon_marketplaces')))
-                    ->map(fn (string $code) =>
-                        MenuItem::make()
-                            ->label($code)
-                            ->url(fn () => route('marketplace.switch', $code))
-                            ->visible(fn () =>
-                                auth()->check()
-                                && session('active_marketplace') !== $code
-                                && UserMarketplace::query()
-                                    ->where('user_id', auth()->id())
-                                    ->where('marketplace_id', $code)
-                                    ->where('is_enabled', true)
-                                    ->exists()
-                            )
-                    )
-                    ->all(),
-
-                // ---------- LANGUAGE ----------
-                [
-                    MenuItem::make()->label('—'),
-
-                    MenuItem::make()
-                        ->label(fn () => 'Language: ' . strtoupper(session('locale', 'en')))
-                        ->icon('heroicon-o-language'),
-
-                    MenuItem::make()
-                        ->label('EN')
-                        ->url(fn () => route('locale.switch', 'en'))
-                        ->visible(fn () => session('locale', 'en') !== 'en'),
-
-                    MenuItem::make()
-                        ->label('FR')
-                        ->url(fn () => route('locale.switch', 'fr'))
-                        ->visible(fn () => session('locale', 'en') !== 'fr'),
-
-                    MenuItem::make()
-                        ->label('DE')
-                        ->url(fn () => route('locale.switch', 'de'))
-                        ->visible(fn () => session('locale', 'en') !== 'de'),
-                ]
-            ))
-             * 
-             */
-
-            // 🧱 Middleware
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
@@ -138,7 +88,6 @@ class AdminPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
             ])
-
             ->authMiddleware([
                 Authenticate::class,
             ]);

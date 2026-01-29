@@ -9,8 +9,8 @@ use Carbon\Carbon;
 class DispatchOrderItems extends Command
 {
     protected $signature = 'orders:dispatch-items
-        {--limit=500}
-        {--marketplace_id=}
+        {--limit=500 : Max orders per marketplace}
+        {--marketplace_id= : Optional marketplace filter}
         {--debug}';
 
     protected $description = 'Dispatch orders for items import';
@@ -18,99 +18,103 @@ class DispatchOrderItems extends Command
     public function handle(): int
     {
         $limit         = (int) $this->option('limit');
-        $marketplaceId = $this->option('marketplace_id')
-            ? (int) $this->option('marketplace_id')
-            : (int) session('active_marketplace');
+        $marketplaceId = $this->option('marketplace_id');
+        $debug         = (bool) $this->option('debug');
 
-        $debug = (bool) $this->option('debug');
-        $now   = Carbon::now();
-
-        if (!$marketplaceId) {
-            $this->error('marketplace_id is required (or active marketplace must be set)');
-            return Command::FAILURE;
-        }
+        $now = Carbon::now();
 
         if ($debug) {
             $this->info('=== ORDER ITEMS DISPATCHER ===');
             $this->line('limit=' . $limit);
-            $this->line('marketplace_id=' . $marketplaceId);
+            $this->line('marketplace_id=' . ($marketplaceId ?: 'ALL'));
             $this->line('now=' . $now->toDateTimeString());
         }
 
         /*
-         |----------------------------------------------------------------------
-         | SELECT candidates
-         |----------------------------------------------------------------------
+         |------------------------------------------------------------
+         | Determine marketplaces
+         |------------------------------------------------------------
          */
 
-        $orders = DB::table('orders as o')
-            ->select(
-                'o.id',
-                'o.user_id',
-                'o.marketplace_id',
-                'o.amazon_order_id'
-            )
-            ->where('o.marketplace_id', $marketplaceId)
-            ->where('o.order_status', 'Shipped')
-            ->where('o.items_status', 'pending')
-            ->whereNull('o.items_imported_at')
-            ->whereNotExists(function ($q) {
-                $q->select(DB::raw(1))
-                    ->from('orders_items_sync as s')
-                    ->whereColumn('s.amazon_order_id', 'o.amazon_order_id')
-                    ->whereColumn('s.marketplace_id', 'o.marketplace_id');
-            })
-            ->orderBy('o.purchase_date')
-            ->limit($limit)
-            ->get();
-
-        if ($debug) {
-            $this->line('orders_selected=' . $orders->count());
+        if ($marketplaceId) {
+            $marketplaces = collect([(int) $marketplaceId]);
+        } else {
+            $marketplaces = DB::table('marketplaces')
+                ->whereNotNull('amazon_id')
+                ->pluck('id');
         }
 
-        if ($orders->isEmpty()) {
+        if ($marketplaces->isEmpty()) {
             if ($debug) {
-                $this->line('No orders to dispatch');
+                $this->warn('No marketplaces found');
             }
             return Command::SUCCESS;
         }
 
-        /*
-         |----------------------------------------------------------------------
-         | INSERT into sync table
-         |----------------------------------------------------------------------
-         */
+        $totalInserted = 0;
 
-        $inserted = 0;
+        foreach ($marketplaces as $mpId) {
 
-        DB::transaction(function () use ($orders, &$inserted, $debug) {
             if ($debug) {
-                $this->line('orders_to_insert=' . $orders->count());
+                $this->line("Processing marketplace_id={$mpId}");
             }
 
-            foreach ($orders as $o) {
-                DB::table('orders_items_sync')->insert([
-                    'user_id'         => $o->user_id,
-                    'marketplace_id'  => $o->marketplace_id,
-                    'amazon_order_id' => $o->amazon_order_id,
+            /*
+             |------------------------------------------------------------
+             | Select candidate orders
+             |------------------------------------------------------------
+             */
 
-                    'status'     => 'pending',
-                    'attempts'   => 0,
-                    'run_after'  => null,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
+            $orders = DB::table('orders as o')
+                ->select(
+                    'o.user_id',
+                    'o.marketplace_id',
+                    'o.amazon_order_id'
+                )
+                ->where('o.marketplace_id', $mpId)
+                ->where('o.order_status', 'Shipped')
+                ->where('o.items_status', 'pending')
+                ->whereNull('o.items_imported_at')
+                ->whereNotExists(function ($q) {
+                    $q->select(DB::raw(1))
+                        ->from('orders_items_sync as s')
+                        ->whereColumn('s.amazon_order_id', 'o.amazon_order_id')
+                        ->whereColumn('s.marketplace_id', 'o.marketplace_id');
+                })
+                ->orderBy('o.purchase_date')
+                ->limit($limit)
+                ->get();
 
-                $inserted++;
+            if ($orders->isEmpty()) {
+                continue;
+            }
 
-                if ($debug) {
-                    $this->line("Dispatched order {$o->amazon_order_id}");
+            /*
+             |------------------------------------------------------------
+             | Insert with protection
+             |------------------------------------------------------------
+             */
+
+            DB::transaction(function () use ($orders, &$totalInserted) {
+                foreach ($orders as $o) {
+                    DB::table('orders_items_sync')->insertOrIgnore([
+                        'user_id'         => $o->user_id,
+                        'marketplace_id'  => $o->marketplace_id,
+                        'amazon_order_id' => $o->amazon_order_id,
+                        'status'          => 'pending',
+                        'attempts'        => 0,
+                        'run_after'       => null,
+                        'created_at'      => now(),
+                        'updated_at'      => now(),
+                    ]);
+
+                    $totalInserted++;
                 }
-            }
-        });
+            });
+        }
 
         if ($debug) {
-            $this->info("Dispatched {$inserted} orders");
+            $this->info("Dispatched total: {$totalInserted}");
         }
 
         return Command::SUCCESS;

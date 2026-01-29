@@ -9,8 +9,8 @@ use Carbon\Carbon;
 class DispatchOrdersSync extends Command
 {
     protected $signature = 'amazon:orders:dispatch
-        {--user_id=}
-        {--marketplace_id=}
+        {--user_id= : Optional user filter}
+        {--marketplace_id= : Optional marketplace filter}
         {--force : Ignore last successful sync}';
 
     protected $description = 'Dispatch Amazon orders sync jobs';
@@ -24,68 +24,85 @@ class DispatchOrdersSync extends Command
         $marketplaceId = $this->option('marketplace_id');
         $force         = (bool) $this->option('force');
 
-        if (!$userId || !$marketplaceId) {
-            $this->error('--user_id and --marketplace_id are required');
-            return self::FAILURE;
+        // 1️⃣ Определяем пары user × marketplace
+        if ($userId && $marketplaceId) {
+            $pairs = collect([[
+                'user_id'        => (int) $userId,
+                'marketplace_id' => (int) $marketplaceId,
+            ]]);
+        } else {
+            // ⚠️ адаптируй имя таблицы при необходимости
+            $pairs = DB::table('user_marketplaces')
+                ->where('is_enabled', 1)
+                ->select('user_id', 'marketplace_id')
+                ->get();
         }
 
-        // 1️⃣ Проверяем, нет ли уже активного sync
-        $exists = DB::table('orders_sync')
-            ->where('user_id', $userId)
-            ->where('marketplace_id', $marketplaceId)
-            ->whereIn('status', ['pending', 'running'])
-            ->exists();
-
-        if ($exists) {
-            $this->warn('Orders sync already pending or running');
+        if ($pairs->isEmpty()) {
+            $this->warn('No user/marketplace pairs found');
             return self::SUCCESS;
         }
 
         $now = Carbon::now();
+        $dispatched = 0;
 
-        // 2️⃣ Последний успешный sync
-        $lastCompleted = null;
+        foreach ($pairs as $pair) {
+            $userId        = (int) $pair->user_id;
+            $marketplaceId = (int) $pair->marketplace_id;
 
-        if (!$force) {
-            $lastCompleted = DB::table('orders_sync')
+            // 2️⃣ Проверка активного sync
+            $exists = DB::table('orders_sync')
                 ->where('user_id', $userId)
                 ->where('marketplace_id', $marketplaceId)
-                ->where('status', 'completed')
-                ->orderByDesc('finished_at')
-                ->value('finished_at');
+                ->whereIn('status', ['pending', 'running'])
+                ->exists();
+
+            if ($exists) {
+                continue;
+            }
+
+            // 3️⃣ Последний успешный sync
+            $lastCompleted = null;
+
+            if (! $force) {
+                $lastCompleted = DB::table('orders_sync')
+                    ->where('user_id', $userId)
+                    ->where('marketplace_id', $marketplaceId)
+                    ->where('status', 'completed')
+                    ->orderByDesc('finished_at')
+                    ->value('finished_at');
+            }
+
+            // 4️⃣ Расчёт from / to
+            if ($force || ! $lastCompleted) {
+                $from = $now->copy()->subDays(self::FALLBACK_DAYS);
+            } else {
+                $from = Carbon::parse($lastCompleted)
+                    ->subDays(self::OVERLAP_DAYS);
+            }
+
+            $to = $now;
+
+            if ($from->greaterThanOrEqualTo($to)) {
+                $from = $to->copy()->subDay();
+            }
+
+            // 5️⃣ Создание sync
+            DB::table('orders_sync')->insert([
+                'user_id'        => $userId,
+                'marketplace_id' => $marketplaceId,
+                'from_date'      => $from,
+                'to_date'        => $to,
+                'is_forced'      => $force ? 1 : 0,
+                'status'         => 'pending',
+                'created_at'     => now(),
+                'updated_at'     => now(),
+            ]);
+
+            $dispatched++;
         }
 
-        // 3️⃣ Расчёт from_date
-        if ($force || !$lastCompleted) {
-            $from = $now->copy()->subDays(self::FALLBACK_DAYS);
-        } else {
-            $from = Carbon::parse($lastCompleted)
-                ->subDays(self::OVERLAP_DAYS);
-        }
-
-        $to = $now;
-
-        // safety guard
-        if ($from->greaterThanOrEqualTo($to)) {
-            $from = $to->copy()->subDay();
-        }
-
-        // 4️⃣ Создаём запись orders_sync
-        $id = DB::table('orders_sync')->insertGetId([
-            'user_id'        => $userId,
-            'marketplace_id' => $marketplaceId,
-            'from_date'      => $from,
-            'to_date'        => $to,
-            'is_forced'      => $force ? 1 : 0,
-            'status'         => 'pending',
-            'created_at'     => now(),
-            'updated_at'     => now(),
-        ]);
-
-        $this->info("Amazon orders sync dispatched");
-        $this->line("orders_sync.id = {$id}");
-        $this->line("from = {$from->toDateTimeString()}");
-        $this->line("to   = {$to->toDateTimeString()}");
+        $this->info("Amazon orders sync dispatched: {$dispatched}");
 
         return self::SUCCESS;
     }
