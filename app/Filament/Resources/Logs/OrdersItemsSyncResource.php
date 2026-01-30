@@ -9,7 +9,6 @@ use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-
 use App\Filament\Resources\Logs\OrdersItemsSyncResource\Pages;
 
 class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
@@ -29,6 +28,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
+
             /* =========================================================
              * QUERY
              * ========================================================= */
@@ -48,11 +48,10 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ->defaultPaginationPageOption(50)
 
             /* =========================================================
-             * HEADER ACTIONS (TOP BAR)
+             * HEADER ACTIONS
              * ========================================================= */
             ->headerActions([
                 Tables\Actions\Action::make('clearLogs')
-                    ->label('') // только иконка
                     ->icon('heroicon-o-trash')
                     ->iconButton()
                     ->color('gray')
@@ -79,15 +78,12 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                                 fn (Builder $qq, $mp) => $qq->where('marketplace_id', (int) $mp)
                             );
 
-                        $period = $data['period'] ?? '7d';
-
-                        if ($period === '3d') {
-                            $q->where('created_at', '<', now()->subDays(3));
-                        } elseif ($period === '7d') {
-                            $q->where('created_at', '<', now()->subDays(7));
-                        } elseif ($period === '30d') {
-                            $q->where('created_at', '<', now()->subDays(30));
-                        } // 'all' => без условий
+                        match ($data['period']) {
+                            '3d'  => $q->where('created_at', '<', now()->subDays(3)),
+                            '7d'  => $q->where('created_at', '<', now()->subDays(7)),
+                            '30d' => $q->where('created_at', '<', now()->subDays(30)),
+                            default => null,
+                        };
 
                         $q->delete();
                     }),
@@ -149,9 +145,11 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ])
 
             /* =========================================================
-             * FILTERS (FIXED: no $v / no wrong signatures)
+             * FILTERS — ЧЁТКО И РАБОЧЕ
              * ========================================================= */
             ->filters([
+
+                /* ---------- STATUS ---------- */
                 Tables\Filters\SelectFilter::make('status')
                     ->options([
                         'pending'    => 'Pending',
@@ -161,54 +159,75 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         'skipped'    => 'Skipped',
                     ]),
 
-                Tables\Filters\Filter::make('amazon_order_id')
+                /* ---------- AMAZON ORDER ---------- */
+                Tables\Filters\Filter::make('amazon_order')
+                    ->label('Amazon Order')
                     ->form([
-                        Forms\Components\TextInput::make('value')
+                        Forms\Components\TextInput::make('order_id')
                             ->label('Amazon Order ID'),
                     ])
                     ->query(function (Builder $q, array $data): Builder {
-                        $value = $data['value'] ?? null;
-
                         return $q->when(
-                            filled($value),
-                            fn (Builder $qq) => $qq->where('amazon_order_id', 'like', "%{$value}%")
+                            filled($data['order_id'] ?? null),
+                            fn (Builder $qq) => $qq->where(
+                                'amazon_order_id',
+                                'like',
+                                '%' . $data['order_id'] . '%'
+                            )
                         );
                     }),
 
-                Tables\Filters\Filter::make('attempts')
+                /* ---------- ATTEMPTS RANGE ---------- */
+                Tables\Filters\Filter::make('attempts_range')
+                    ->label('Attempts range')
                     ->form([
-                        Forms\Components\TextInput::make('from')->numeric(),
-                        Forms\Components\TextInput::make('to')->numeric(),
+                        Forms\Components\TextInput::make('min')
+                            ->numeric()
+                            ->label('From'),
+                        Forms\Components\TextInput::make('max')
+                            ->numeric()
+                            ->label('To'),
                     ])
                     ->query(function (Builder $q, array $data): Builder {
                         return $q
-                            ->when(filled($data['from'] ?? null), fn (Builder $qq) => $qq->where('attempts', '>=', (int) $data['from']))
-                            ->when(filled($data['to'] ?? null), fn (Builder $qq) => $qq->where('attempts', '<=', (int) $data['to']));
+                            ->when(filled($data['min'] ?? null), fn (Builder $qq) => $qq->where('attempts', '>=', (int) $data['min']))
+                            ->when(filled($data['max'] ?? null), fn (Builder $qq) => $qq->where('attempts', '<=', (int) $data['max']));
                     }),
 
-                Tables\Filters\SelectFilter::make('items_imported')
+                /* ---------- IMPORTED ---------- */
+                Tables\Filters\SelectFilter::make('imported')
                     ->label('Imported')
                     ->options([
                         'yes' => 'Yes',
                         'no'  => 'No',
                     ])
                     ->query(function (Builder $q, array $data): Builder {
-                        $value = $data['value'] ?? null;
-
-                        return $q
-                            ->when($value === 'yes', fn (Builder $qq) => $qq->where('items_imported', '>', 0))
-                            ->when($value === 'no', fn (Builder $qq) => $qq->whereNull('items_imported'));
+                        return match ($data['value'] ?? null) {
+                            'yes' => $q->where('items_imported', '>', 0),
+                            'no'  => $q->whereNull('items_imported'),
+                            default => $q,
+                        };
                     }),
 
-                Tables\Filters\Filter::make('created_at')
+                /* ---------- CREATED DATE RANGE ---------- */
+                Tables\Filters\Filter::make('created_period')
+                    ->label('Created period')
                     ->form([
-                        Forms\Components\DatePicker::make('from'),
-                        Forms\Components\DatePicker::make('to'),
+                        Forms\Components\DatePicker::make('from')
+                            ->label('From date'),
+                        Forms\Components\DatePicker::make('to')
+                            ->label('To date'),
                     ])
                     ->query(function (Builder $q, array $data): Builder {
                         return $q
-                            ->when(filled($data['from'] ?? null), fn (Builder $qq) => $qq->whereDate('created_at', '>=', $data['from']))
-                            ->when(filled($data['to'] ?? null), fn (Builder $qq) => $qq->whereDate('created_at', '<=', $data['to']));
+                            ->when(
+                                filled($data['from'] ?? null),
+                                fn (Builder $qq) => $qq->whereDate('created_at', '>=', $data['from'])
+                            )
+                            ->when(
+                                filled($data['to'] ?? null),
+                                fn (Builder $qq) => $qq->whereDate('created_at', '<=', $data['to'])
+                            );
                     }),
             ])
 
