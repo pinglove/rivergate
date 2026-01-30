@@ -27,3 +27,22 @@ Homestead.json
 Homestead.yaml
 Thumbs.db
 /nbproject/private/
+# node
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# spapi runtime artifacts
+spapi/**/downloads/
+spapi/**/tmp/
+spapi/**/logs/
+
+# generated reports / raw data
+*.raw
+*.tsv
+*.tsv.gz
+
+# local env
+.env
+.env.*
