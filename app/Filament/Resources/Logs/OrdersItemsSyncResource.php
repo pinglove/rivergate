@@ -93,6 +93,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
+            ->deferFilters(false)
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
