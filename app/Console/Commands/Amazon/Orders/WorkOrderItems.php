@@ -4,6 +4,7 @@ namespace App\Console\Commands\Amazon\Orders;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
 use App\Models\Amazon\RefreshToken;
 
 class WorkOrderItems extends Command
@@ -14,7 +15,7 @@ class WorkOrderItems extends Command
         {--once : Process single job and exit (debug only)}
         {--debug}';
 
-    protected $description = 'Order items worker (production-safe)';
+    protected $description = 'Order items worker (PRODUCTION SAFE, HARD DEBUG)';
 
     private const MAX_ATTEMPTS = 5;
     private const DEFAULT_RETRY_MINUTES = 10;
@@ -35,14 +36,18 @@ class WorkOrderItems extends Command
         pcntl_signal(SIGINT, fn () => $this->shouldStop = true);
 
         if ($debug) {
-            $this->info('=== ORDER ITEMS WORKER (PROD SAFE) ===');
+            $this->info('=== ORDER ITEMS WORKER (HARD DEBUG) ===');
             $this->line('limit=' . ($limit ?: '∞'));
             $this->line('once=' . ($once ? 'YES' : 'NO'));
             $this->line('sleep=' . $idleSleep);
         }
 
         while (! $this->shouldStop) {
+
             if ($limit > 0 && $processed >= $limit) {
+                if ($debug) {
+                    $this->warn("debug limit {$limit} reached → exit");
+                }
                 break;
             }
 
@@ -51,12 +56,23 @@ class WorkOrderItems extends Command
             if ($worked) {
                 $processed++;
                 if ($once) {
+                    if ($debug) {
+                        $this->warn('debug --once → exit');
+                    }
                     break;
                 }
                 continue;
             }
 
+            if ($debug) {
+                $this->line('idle…');
+            }
+
             sleep($idleSleep);
+        }
+
+        if ($debug) {
+            $this->warn('Worker exited gracefully');
         }
 
         return Command::SUCCESS;
@@ -64,7 +80,7 @@ class WorkOrderItems extends Command
 
     private function processOne(bool $debug): bool
     {
-        $now = now();
+        $now = Carbon::now();
 
         DB::beginTransaction();
 
@@ -87,7 +103,14 @@ class WorkOrderItems extends Command
 
             if (! $task) {
                 DB::commit();
+                if ($debug) {
+                    $this->line('no tasks found');
+                }
                 return false;
+            }
+
+            if ($debug) {
+                $this->info("CLAIM task_id={$task->id} status={$task->status} attempts={$task->attempts}");
             }
 
             if ((int) $task->attempts >= self::MAX_ATTEMPTS) {
@@ -101,6 +124,11 @@ class WorkOrderItems extends Command
                     ]);
 
                 DB::commit();
+
+                if ($debug) {
+                    $this->warn("task {$task->id} skipped: max attempts");
+                }
+
                 return false;
             }
 
@@ -109,9 +137,18 @@ class WorkOrderItems extends Command
                 ->where('marketplace_id', $task->marketplace_id)
                 ->first();
 
-            // retryable: orders may arrive later
             if (! $order) {
-                $this->markFailed($task->id, (int) $task->attempts, 'Order not imported yet', self::DEFAULT_RETRY_MINUTES);
+                if ($debug) {
+                    $this->warn("order not found for amazon_order_id={$task->amazon_order_id}");
+                }
+
+                $this->markFailed(
+                    $task->id,
+                    (int) $task->attempts + 1,
+                    'Order not imported yet',
+                    self::DEFAULT_RETRY_MINUTES
+                );
+
                 DB::commit();
                 return true;
             }
@@ -131,6 +168,11 @@ class WorkOrderItems extends Command
                     ]);
 
                 DB::commit();
+
+                if ($debug) {
+                    $this->error("marketplace misconfigured for task {$task->id}");
+                }
+
                 return false;
             }
 
@@ -151,10 +193,15 @@ class WorkOrderItems extends Command
                     ]);
 
                 DB::commit();
+
+                if ($debug) {
+                    $this->error("RefreshToken NOT FOUND user_id={$order->user_id} marketplace_id={$order->marketplace_id}");
+                }
+
                 return false;
             }
 
-            // CLAIM
+            // CLAIM TASK
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
                 ->update([
@@ -175,7 +222,8 @@ class WorkOrderItems extends Command
         }
 
         if ($debug) {
-            $this->line("NODE order_items task_id={$task->id}");
+            $this->line("NODE CALL task_id={$task->id} order={$order->amazon_order_id}");
+            $this->line("AUTH user_id={$order->user_id} marketplace_id={$order->marketplace_id}");
         }
 
         $cmd = [
@@ -195,6 +243,10 @@ class WorkOrderItems extends Command
             '--sp_api_region=' . $token->sp_api_region,
         ];
 
+        if ($debug) {
+            $this->line('CMD: ' . implode(' ', array_map('escapeshellarg', $cmd)));
+        }
+
         $process = proc_open(
             implode(' ', array_map('escapeshellarg', $cmd)),
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -206,18 +258,32 @@ class WorkOrderItems extends Command
         $stderr = stream_get_contents($pipes[2]) ?: '';
         proc_close($process);
 
+        if ($debug) {
+            $this->line('--- NODE STDOUT ---');
+            $this->line($stdout ?: '[empty]');
+            $this->line('--- NODE STDERR ---');
+            $this->line($stderr ?: '[empty]');
+        }
+
         $json = $this->extractLastJson($stdout);
 
         if (! $json) {
-            $msg = $this->buildNodeError('Node returned no JSON', $stdout, $stderr);
-            $this->markFailed($task->id, (int) $task->attempts + 1, $msg, self::DEFAULT_RETRY_MINUTES);
+            $this->markFailed(
+                $task->id,
+                (int) $task->attempts + 1,
+                'Node returned no JSON',
+                self::DEFAULT_RETRY_MINUTES
+            );
             return true;
         }
 
         if (($json['success'] ?? false) !== true) {
-            $delay = (int) ($json['retry_after_minutes'] ?? self::DEFAULT_RETRY_MINUTES);
-            $msg = $this->buildNodeError($json['error'] ?? 'Node error', $stdout, $stderr);
-            $this->markFailed($task->id, (int) $task->attempts + 1, $msg, $delay);
+            $this->markFailed(
+                $task->id,
+                (int) $task->attempts + 1,
+                $json['error'] ?? 'Node error',
+                (int) ($json['retry_after_minutes'] ?? self::DEFAULT_RETRY_MINUTES)
+            );
             return true;
         }
 
@@ -250,7 +316,7 @@ class WorkOrderItems extends Command
                 ->where('id', $taskId)
                 ->update([
                     'status'      => 'skipped',
-                    'last_error'  => $this->truncate($error, 3000),
+                    'last_error'  => mb_substr($error, 0, 3000),
                     'finished_at' => now(),
                     'updated_at'  => now(),
                 ]);
@@ -261,46 +327,10 @@ class WorkOrderItems extends Command
             ->where('id', $taskId)
             ->update([
                 'status'     => 'failed',
-                'last_error' => $this->truncate($error, 3000),
+                'last_error' => mb_substr($error, 0, 3000),
                 'run_after'  => now()->addMinutes(max(1, $delayMinutes)),
                 'updated_at' => now(),
             ]);
-    }
-
-    private function buildNodeError(string $headline, string $stdout, string $stderr): string
-    {
-        $out = trim($stdout);
-        $err = trim($stderr);
-
-        // часто stderr пустой, а ошибка в stdout
-        $tailStdout = $this->tail($out, 1200);
-        $tailStderr = $this->tail($err, 1200);
-
-        $msg = $headline;
-
-        if ($tailStderr !== '') {
-            $msg .= " | stderr_tail=" . $tailStderr;
-        }
-
-        if ($tailStdout !== '') {
-            $msg .= " | stdout_tail=" . $tailStdout;
-        }
-
-        return $msg;
-    }
-
-    private function tail(string $s, int $len): string
-    {
-        $s = trim($s);
-        if ($s === '') return '';
-        return mb_strlen($s) > $len ? mb_substr($s, -$len) : $s;
-    }
-
-    private function truncate(string $s, int $len): string
-    {
-        $s = trim($s);
-        if ($s === '') return $s;
-        return mb_strlen($s) > $len ? mb_substr($s, 0, $len) : $s;
     }
 
     private function extractLastJson(string $stdout): ?array
