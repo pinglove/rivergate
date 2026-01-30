@@ -4,7 +4,6 @@ namespace App\Console\Commands\Amazon\Orders;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
 use App\Models\Amazon\RefreshToken;
 
 class WorkOrderItems extends Command
@@ -18,6 +17,8 @@ class WorkOrderItems extends Command
     protected $description = 'Order items worker (production-safe)';
 
     private const MAX_ATTEMPTS = 5;
+    private const DEFAULT_RETRY_MINUTES = 5;
+
     private bool $shouldStop = false;
 
     public function handle(): int
@@ -29,12 +30,16 @@ class WorkOrderItems extends Command
 
         $processed = 0;
 
+        // graceful exit
         pcntl_async_signals(true);
         pcntl_signal(SIGTERM, fn () => $this->shouldStop = true);
         pcntl_signal(SIGINT, fn () => $this->shouldStop = true);
 
         if ($debug) {
-            $this->info('=== ORDER ITEMS WORKER (PRODUCTION SAFE) ===');
+            $this->info('=== ORDER ITEMS WORKER (PROD SAFE) ===');
+            $this->line('limit=' . ($limit ?: '∞'));
+            $this->line('once=' . ($once ? 'YES' : 'NO'));
+            $this->line('sleep=' . $idleSleep);
         }
 
         while (! $this->shouldStop) {
@@ -58,6 +63,10 @@ class WorkOrderItems extends Command
             sleep($idleSleep);
         }
 
+        if ($debug) {
+            $this->warn('Worker exited gracefully');
+        }
+
         return Command::SUCCESS;
     }
 
@@ -69,10 +78,19 @@ class WorkOrderItems extends Command
 
         try {
             $task = DB::table('orders_items_sync')
-                ->whereIn('status', ['pending', 'failed'])
                 ->where(function ($q) use ($now) {
-                    $q->whereNull('run_after')
-                      ->orWhere('run_after', '<=', $now);
+                    // ✅ pending берём всегда
+                    $q->where('status', 'pending')
+
+                      // ✅ failed берём только если пришло время ретрая и attempts < MAX
+                      ->orWhere(function ($q2) use ($now) {
+                          $q2->where('status', 'failed')
+                             ->where('attempts', '<', self::MAX_ATTEMPTS)
+                             ->where(function ($q3) use ($now) {
+                                 $q3->whereNull('run_after')
+                                    ->orWhere('run_after', '<=', $now);
+                             });
+                      });
                 })
                 ->orderBy('id')
                 ->lockForUpdate()
@@ -83,49 +101,55 @@ class WorkOrderItems extends Command
                 return false;
             }
 
-            // ⛔ HARD STOP: max attempts
-            if ($task->attempts >= self::MAX_ATTEMPTS) {
+            // ⛔ HARD STOP: max attempts (на всякий случай)
+            if ((int) $task->attempts >= self::MAX_ATTEMPTS) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
                     ->update([
-                        'status'     => 'skipped',
-                        'last_error' => 'Max attempts reached',
-                        'updated_at' => now(),
+                        'status'      => 'skipped',
+                        'last_error'  => 'Max attempts reached',
+                        'finished_at' => now(),
+                        'updated_at'  => now(),
                     ]);
 
                 DB::commit();
                 return false;
             }
 
+            // Важно: order для items обязан существовать
             $order = DB::table('orders')
                 ->where('amazon_order_id', $task->amazon_order_id)
                 ->where('marketplace_id', $task->marketplace_id)
                 ->first();
 
+            // ✅ Это НЕ terminal: возможно order ещё не импортирован → retry
             if (! $order) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
                     ->update([
-                        'status'     => 'skipped',
-                        'last_error' => 'Order not found',
+                        'status'     => 'failed',
+                        'last_error' => 'Order not imported yet',
+                        'run_after'  => now()->addMinutes(self::DEFAULT_RETRY_MINUTES),
                         'updated_at' => now(),
                     ]);
 
                 DB::commit();
-                return false;
+                return true;
             }
 
             $marketplace = DB::table('marketplaces')
                 ->where('id', $order->marketplace_id)
                 ->first();
 
+            // ❌ terminal: конфиг сломан
             if (! $marketplace || ! $marketplace->amazon_id) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
                     ->update([
-                        'status'     => 'skipped',
-                        'last_error' => 'Marketplace misconfigured',
-                        'updated_at' => now(),
+                        'status'      => 'skipped',
+                        'last_error'  => 'Marketplace misconfigured',
+                        'finished_at' => now(),
+                        'updated_at'  => now(),
                     ]);
 
                 DB::commit();
@@ -138,13 +162,15 @@ class WorkOrderItems extends Command
                 ->where('status', 'active')
                 ->first();
 
+            // ❌ terminal: нет токена → бессмысленно ретраить
             if (! $token) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
                     ->update([
-                        'status'     => 'skipped',
-                        'last_error' => 'RefreshToken not found',
-                        'updated_at' => now(),
+                        'status'      => 'skipped',
+                        'last_error'  => 'RefreshToken not found',
+                        'finished_at' => now(),
+                        'updated_at'  => now(),
                     ]);
 
                 DB::commit();
@@ -156,7 +182,8 @@ class WorkOrderItems extends Command
                 ->where('id', $task->id)
                 ->update([
                     'status'     => 'processing',
-                    'attempts'   => $task->attempts + 1,
+                    'attempts'   => (int) $task->attempts + 1,
+                    'started_at' => now(),
                     'updated_at' => now(),
                 ]);
 
@@ -164,6 +191,9 @@ class WorkOrderItems extends Command
 
         } catch (\Throwable $e) {
             DB::rollBack();
+            if ($debug) {
+                $this->error('DB ERROR: ' . $e->getMessage());
+            }
             return false;
         }
 
@@ -185,6 +215,10 @@ class WorkOrderItems extends Command
             '--sp_api_region=' . $token->sp_api_region,
         ];
 
+        if ($debug) {
+            $this->line("NODE order_items task_id={$task->id}");
+        }
+
         $process = proc_open(
             implode(' ', array_map('escapeshellarg', $cmd)),
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -200,7 +234,7 @@ class WorkOrderItems extends Command
 
         // ❌ Node did not return JSON → retry with backoff
         if (! $json) {
-            $this->retry($task->id, 'Node returned no JSON');
+            $this->retry($task->id, 'Node returned no JSON', self::DEFAULT_RETRY_MINUTES);
             return true;
         }
 
@@ -208,7 +242,7 @@ class WorkOrderItems extends Command
             $this->retry(
                 $task->id,
                 $json['error'] ?? 'Node error',
-                (int) ($json['retry_after_minutes'] ?? 5)
+                (int) ($json['retry_after_minutes'] ?? self::DEFAULT_RETRY_MINUTES)
             );
             return true;
         }
@@ -218,8 +252,9 @@ class WorkOrderItems extends Command
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
                 ->update([
-                    'status'     => 'completed',
-                    'updated_at' => now(),
+                    'status'      => 'completed',
+                    'finished_at' => now(),
+                    'updated_at'  => now(),
                 ]);
 
             DB::table('orders')
@@ -234,8 +269,22 @@ class WorkOrderItems extends Command
         return true;
     }
 
-    private function retry(int $taskId, string $error, int $delayMinutes = 5): void
+    private function retry(int $taskId, string $error, int $delayMinutes): void
     {
+        // Если уже дошли до MAX_ATTEMPTS — terminal
+        $row = DB::table('orders_items_sync')->where('id', $taskId)->first();
+        if ($row && (int) $row->attempts >= self::MAX_ATTEMPTS) {
+            DB::table('orders_items_sync')
+                ->where('id', $taskId)
+                ->update([
+                    'status'      => 'skipped',
+                    'last_error'  => 'Max attempts reached: ' . $error,
+                    'finished_at' => now(),
+                    'updated_at'  => now(),
+                ]);
+            return;
+        }
+
         DB::table('orders_items_sync')
             ->where('id', $taskId)
             ->update([
