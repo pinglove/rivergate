@@ -9,6 +9,7 @@ use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Forms;
+use Filament\Notifications\Notification;
 use Illuminate\Database\Eloquent\Builder;
 use Carbon\Carbon;
 
@@ -20,6 +21,12 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     protected static ?string $navigationLabel = 'Orders Items Sync';
     protected static ?string $navigationIcon = 'heroicon-o-queue-list';
     protected static ?int $navigationSort = 60;
+
+    /**
+     * 🔴 ВКЛЮЧАЕТ ЭКРАННЫЙ ДЕБАГ
+     * выключить после диагностики
+     */
+    private const SCREEN_DEBUG = true;
 
     public static function canAccess(): bool
     {
@@ -41,11 +48,18 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
+
+            /* =========================================================
+             * SORT + PAGINATION
+             * ========================================================= */
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
-            ->headerActions([
+            /* =========================================================
+             * HEADER ACTIONS (включая DEBUG)
+             * ========================================================= */
+            ->headerActions(array_filter([
                 Tables\Actions\Action::make('clearLogs')
                     ->icon('heroicon-o-trash')
                     ->iconButton()
@@ -82,8 +96,29 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
 
                         $q->delete();
                     }),
-            ])
 
+                self::SCREEN_DEBUG
+                    ? Tables\Actions\Action::make('debugFilters')
+                        ->label('DEBUG FILTERS')
+                        ->color('danger')
+                        ->icon('heroicon-o-bug-ant')
+                        ->action(function () {
+                            Notification::make()
+                                ->title('🔴 tableFilters (RAW)')
+                                ->danger()
+                                ->body(
+                                    '<pre style="white-space:pre-wrap;">'
+                                    . e(json_encode(request()->input('tableFilters'), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))
+                                    . '</pre>'
+                                )
+                                ->send();
+                        })
+                    : null,
+            ]))
+
+            /* =========================================================
+             * COLUMNS — ВСЕ, КАК В ПРОДЕ
+             * ========================================================= */
             ->columns([
                 Tables\Columns\TextColumn::make('id')
                     ->sortable()
@@ -142,7 +177,12 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                     ->toggleable(),
             ])
 
+            /* =========================================================
+             * FILTERS — С ЭКРАННЫМ ДЕБАГОМ
+             * ========================================================= */
             ->filters([
+
+                /* ---------- STATUS ---------- */
                 Tables\Filters\SelectFilter::make('status')
                     ->options([
                         'pending'    => 'Pending',
@@ -152,19 +192,25 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         'skipped'    => 'Skipped',
                     ]),
 
+                /* ---------- AMAZON ORDER ---------- */
                 Tables\Filters\Filter::make('amazon_order')
                     ->label('Amazon Order')
                     ->form([
                         Forms\Components\TextInput::make('order_id')
                             ->label('Contains'),
                     ])
-                    ->query(fn (Builder $q, array $data) =>
-                        $q->when(
+                    ->query(function (Builder $q, array $data): Builder {
+                        return $q->when(
                             filled($data['order_id'] ?? null),
-                            fn (Builder $qq) => $qq->where('amazon_order_id', 'like', '%' . $data['order_id'] . '%')
-                        )
-                    ),
+                            fn (Builder $qq) => $qq->where(
+                                'amazon_order_id',
+                                'like',
+                                '%' . $data['order_id'] . '%'
+                            )
+                        );
+                    }),
 
+                /* ---------- ATTEMPTS RANGE ---------- */
                 Tables\Filters\Filter::make('attempts_range')
                     ->label('Attempts range')
                     ->form([
@@ -191,6 +237,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             );
                     }),
 
+                /* ---------- IMPORTED ---------- */
                 Tables\Filters\SelectFilter::make('imported')
                     ->label('Imported')
                     ->options([
@@ -201,14 +248,14 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         'yes' => $q->where('items_imported', '>', 0),
                         'no'  => $q->where(fn ($qq) =>
                             $qq->whereNull('items_imported')
-                                ->orWhere('items_imported', '=', 0)
+                               ->orWhere('items_imported', '=', 0)
                         ),
                         default => $q,
                     }),
 
-                /**
-                 * ✅ CREATED DATE RANGE — реально рабочий (Y-m-d + whereBetween)
-                 */
+                /* =====================================================
+                 * 🔴 CREATED DATE — ЭКРАННЫЙ ДЕБАГ
+                 * ===================================================== */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
@@ -218,19 +265,49 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         ]),
                     ])
                     ->query(function (Builder $q, array $data): Builder {
+
+                        if (self::SCREEN_DEBUG) {
+                            Notification::make()
+                                ->title('🔴 DATE FILTER DATA')
+                                ->danger()
+                                ->body(
+                                    '<pre style="white-space:pre-wrap;">'
+                                    . e(json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))
+                                    . '</pre>'
+                                )
+                                ->send();
+                        }
+
                         $fromRaw = $data['from'] ?? null;
                         $toRaw   = $data['to'] ?? null;
 
-                        // DatePicker обычно отдаёт 'Y-m-d'. Делаем максимально строгий парс.
-                        $from = filled($fromRaw)
+                        if (!$fromRaw && !$toRaw) {
+                            return $q;
+                        }
+
+                        $from = $fromRaw
                             ? Carbon::createFromFormat('Y-m-d', (string) $fromRaw)->startOfDay()
                             : null;
 
-                        $to = filled($toRaw)
+                        $to = $toRaw
                             ? Carbon::createFromFormat('Y-m-d', (string) $toRaw)->endOfDay()
                             : null;
 
-                        // обе даты — самый надёжный вариант
+                        if (self::SCREEN_DEBUG) {
+                            Notification::make()
+                                ->title('🔴 DATE FILTER PARSED')
+                                ->danger()
+                                ->body(
+                                    '<pre style="white-space:pre-wrap;">'
+                                    . e(json_encode([
+                                        'from' => $from?->toDateTimeString(),
+                                        'to'   => $to?->toDateTimeString(),
+                                    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))
+                                    . '</pre>'
+                                )
+                                ->send();
+                        }
+
                         if ($from && $to) {
                             return $q->whereBetween('created_at', [
                                 $from->toDateTimeString(),
@@ -238,14 +315,13 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             ]);
                         }
 
-                        // одна из дат
                         return $q
-                            ->when($from, fn (Builder $qq) => $qq->where('created_at', '>=', $from->toDateTimeString()))
-                            ->when($to, fn (Builder $qq) => $qq->where('created_at', '<=', $to->toDateTimeString()));
+                            ->when($from, fn ($qq) => $qq->where('created_at', '>=', $from->toDateTimeString()))
+                            ->when($to, fn ($qq) => $qq->where('created_at', '<=', $to->toDateTimeString()));
                     }),
             ])
 
-            ->actions([]); // никаких row actions
+            ->actions([]);
     }
 
     public static function getPages(): array
