@@ -33,33 +33,48 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     {
         $q = parent::getEloquentQuery();
 
-        // marketplace
+        /**
+         * marketplace
+         */
         if ($mp = session('active_marketplace')) {
             $q->where('marketplace_id', (int) $mp);
         }
 
-        // 🔴 DATE FILTER (REAL, FINAL)
-        $filters = request()->input('tableFilters.created_period');
+        /**
+         * DATE FILTER
+         */
+        $period = request()->input('tableFilters.created_period');
 
-        if (is_array($filters)) {
-            $from = $filters['from'] ?? null;
-            $to   = $filters['to'] ?? null;
-
-            if ($from) {
+        if (is_array($period)) {
+            if (!empty($period['from'])) {
                 $q->where(
                     'created_at',
                     '>=',
-                    Carbon::createFromFormat('Y-m-d', $from)->startOfDay()
+                    Carbon::createFromFormat('Y-m-d', $period['from'])->startOfDay()
                 );
             }
 
-            if ($to) {
+            if (!empty($period['to'])) {
                 $q->where(
                     'created_at',
                     '<=',
-                    Carbon::createFromFormat('Y-m-d', $to)->endOfDay()
+                    Carbon::createFromFormat('Y-m-d', $period['to'])->endOfDay()
                 );
             }
+        }
+
+        /**
+         * AMAZON ORDER ID FILTER
+         */
+        if ($orderId = request()->input('tableFilters.amazon_order_id.value')) {
+            $q->where('amazon_order_id', 'like', '%' . trim($orderId) . '%');
+        }
+
+        /**
+         * STATUS FILTER
+         */
+        if ($status = request()->input('tableFilters.status.value')) {
+            $q->where('status', $status);
         }
 
         return $q;
@@ -73,17 +88,48 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ->defaultPaginationPageOption(50)
 
             ->columns([
-                Tables\Columns\TextColumn::make('id')->sortable(),
-                Tables\Columns\TextColumn::make('amazon_order_id')->sortable()->searchable(),
-                Tables\Columns\TextColumn::make('status')->sortable()->badge(),
-                Tables\Columns\TextColumn::make('attempts')->sortable(),
-                Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
-                Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
-                Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('id')
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('amazon_order_id')
+                    ->label('Amazon Order')
+                    ->sortable()
+                    ->searchable(),
+
+                Tables\Columns\TextColumn::make('status')
+                    ->sortable()
+                    ->badge()
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'success'     => 'success',
+                        'completed'   => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
+                    }),
+
+                Tables\Columns\TextColumn::make('attempts')
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('created_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('started_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('finished_at')
+                    ->dateTime()
+                    ->sortable(),
             ])
 
             ->filters([
-                // UI ФИЛЬТР (БЕЗ query!)
+                /**
+                 * DATE FILTER (UI ONLY)
+                 */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
@@ -91,6 +137,35 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             Forms\Components\DatePicker::make('from')->label('From'),
                             Forms\Components\DatePicker::make('to')->label('To'),
                         ]),
+                    ]),
+
+                /**
+                 * AMAZON ORDER ID FILTER
+                 */
+                Tables\Filters\Filter::make('amazon_order_id')
+                    ->label('Amazon Order ID')
+                    ->form([
+                        Forms\Components\TextInput::make('value')
+                            ->placeholder('408-1234567-1234567'),
+                    ]),
+
+                /**
+                 * STATUS FILTER
+                 */
+                Tables\Filters\Filter::make('status')
+                    ->label('Status')
+                    ->form([
+                        Forms\Components\Select::make('value')
+                            ->options([
+                                'pending'     => 'Pending',
+                                'processing'  => 'Processing',
+                                'success'     => 'Success',
+                                'completed'   => 'Completed',
+                                'failed'      => 'Failed',
+                                'error'       => 'Error',
+                                'skipped'     => 'Skipped',
+                            ])
+                            ->placeholder('Any'),
                     ]),
             ])
 
