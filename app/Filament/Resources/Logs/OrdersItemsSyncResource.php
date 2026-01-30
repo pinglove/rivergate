@@ -65,14 +65,74 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
         return $q;
     }
 
+    /**
+     * DEBUG helper: enabled only when ?debug=1 AND APP_DEBUG=true (so you don't leak info in prod accidentally)
+     */
+    protected static function debugEnabled(): bool
+    {
+        return (bool) config('app.debug') && request()->boolean('debug');
+    }
+
+    protected static function debugPayload(): array
+    {
+        return [
+            'url' => request()->fullUrl(),
+            'method' => request()->method(),
+            'is_livewire' => request()->hasHeader('X-Livewire'),
+            'tableFilters_created_period' => request()->input('tableFilters.created_period'),
+            'all_tableFilters' => request()->input('tableFilters'),
+            'active_marketplace_session' => session('active_marketplace'),
+        ];
+    }
+
+    protected static function debugSql(): array
+    {
+        // Build the exact same query and dump its SQL/bindings.
+        // NOTE: This is the *builder SQL* (with bindings), not the final DB executed SQL string.
+        $q = static::getEloquentQuery();
+
+        return [
+            'sql' => $q->toSql(),
+            'bindings' => $q->getBindings(),
+        ];
+    }
+
     public static function table(Table $table): Table
     {
+        $debug = static::debugEnabled();
+
         return $table
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
-            ->columns([
+            ->columns(array_values(array_filter([
+                // =========================
+                // DEBUG "COLUMNS" (top of table)
+                // =========================
+                $debug ? Tables\Columns\TextColumn::make('___debug_request')
+                    ->label('DEBUG: Request / Filters received')
+                    ->state(function () {
+                        return json_encode(self::debugPayload(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+                    })
+                    ->wrap()
+                    ->toggleable(isToggledHiddenByDefault: false)
+                    ->extraAttributes(['class' => 'font-mono text-xs'])
+                    : null,
+
+                $debug ? Tables\Columns\TextColumn::make('___debug_sql')
+                    ->label('DEBUG: SQL (builder) + bindings')
+                    ->state(function () {
+                        return json_encode(self::debugSql(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+                    })
+                    ->wrap()
+                    ->toggleable(isToggledHiddenByDefault: false)
+                    ->extraAttributes(['class' => 'font-mono text-xs'])
+                    : null,
+
+                // =========================
+                // REAL COLUMNS
+                // =========================
                 Tables\Columns\TextColumn::make('id')->sortable(),
                 Tables\Columns\TextColumn::make('amazon_order_id')->sortable()->searchable(),
                 Tables\Columns\TextColumn::make('status')->sortable()->badge(),
@@ -80,7 +140,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                 Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
                 Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
                 Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
-            ])
+            ])))
 
             ->filters([
                 // UI ФИЛЬТР (БЕЗ query!)
