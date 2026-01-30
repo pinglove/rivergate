@@ -3,13 +3,13 @@
 namespace App\Filament\Resources\Logs;
 
 use App\Models\Logs\OrdersItemsSync;
+use App\Filament\Resources\Logs\OrdersItemsSyncResource\Pages;
 use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
-use Filament\Forms;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-use App\Filament\Resources\Logs\OrdersItemsSyncResource\Pages;
 use Carbon\Carbon;
 
 class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
@@ -27,8 +27,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     }
 
     /**
-     * Marketplace filter — делаем на уровне EloquentQuery,
-     * так Filament filters работают корректно и стабильно.
+     * Marketplace filter — ТОЛЬКО здесь
      */
     public static function getEloquentQuery(): Builder
     {
@@ -42,17 +41,10 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
-
-            /* =========================================================
-             * SORT + PAGINATION
-             * ========================================================= */
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
-            /* =========================================================
-             * HEADER ACTIONS
-             * ========================================================= */
             ->headerActions([
                 Tables\Actions\Action::make('clearLogs')
                     ->icon('heroicon-o-trash')
@@ -85,16 +77,13 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             '3d'  => $q->where('created_at', '<', now()->subDays(3)),
                             '7d'  => $q->where('created_at', '<', now()->subDays(7)),
                             '30d' => $q->where('created_at', '<', now()->subDays(30)),
-                            default => null, // all
+                            default => null,
                         };
 
                         $q->delete();
                     }),
             ])
 
-            /* =========================================================
-             * COLUMNS
-             * ========================================================= */
             ->columns([
                 Tables\Columns\TextColumn::make('id')
                     ->sortable()
@@ -103,10 +92,12 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                 Tables\Columns\TextColumn::make('amazon_order_id')
                     ->label('Amazon Order')
                     ->searchable()
+                    ->sortable()
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
+                    ->sortable()
                     ->color(fn (string $state): string => match ($state) {
                         'pending'    => 'gray',
                         'processing' => 'warning',
@@ -114,8 +105,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         'failed'     => 'danger',
                         'skipped'    => 'secondary',
                         default      => 'gray',
-                    })
-                    ->sortable(),
+                    }),
 
                 Tables\Columns\TextColumn::make('attempts')
                     ->sortable(),
@@ -123,19 +113,23 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                 Tables\Columns\IconColumn::make('items_imported')
                     ->label('Imported')
                     ->boolean()
+                    ->sortable()
                     ->trueIcon('heroicon-o-check-circle')
                     ->falseIcon('heroicon-o-x-circle'),
 
                 Tables\Columns\TextColumn::make('run_after')
                     ->dateTime()
+                    ->sortable()
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('started_at')
                     ->dateTime()
+                    ->sortable()
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('finished_at')
                     ->dateTime()
+                    ->sortable()
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('created_at')
@@ -144,15 +138,11 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
 
                 Tables\Columns\TextColumn::make('updated_at')
                     ->dateTime()
+                    ->sortable()
                     ->toggleable(),
             ])
 
-            /* =========================================================
-             * FILTERS — PROD
-             * ========================================================= */
             ->filters([
-
-                /* ---------- STATUS ---------- */
                 Tables\Filters\SelectFilter::make('status')
                     ->options([
                         'pending'    => 'Pending',
@@ -162,23 +152,19 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         'skipped'    => 'Skipped',
                     ]),
 
-                /* ---------- AMAZON ORDER ---------- */
                 Tables\Filters\Filter::make('amazon_order')
                     ->label('Amazon Order')
                     ->form([
                         Forms\Components\TextInput::make('order_id')
                             ->label('Contains'),
                     ])
-                    ->query(function (Builder $q, array $data): Builder {
-                        $value = trim((string) ($data['order_id'] ?? ''));
+                    ->query(fn (Builder $q, array $data) =>
+                        $q->when(
+                            filled($data['order_id'] ?? null),
+                            fn (Builder $qq) => $qq->where('amazon_order_id', 'like', '%' . $data['order_id'] . '%')
+                        )
+                    ),
 
-                        return $q->when(
-                            $value !== '',
-                            fn (Builder $qq) => $qq->where('amazon_order_id', 'like', '%' . $value . '%')
-                        );
-                    }),
-
-                /* ---------- ATTEMPTS RANGE (STABLE) ---------- */
                 Tables\Filters\Filter::make('attempts_range')
                     ->label('Attempts range')
                     ->form([
@@ -187,7 +173,6 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                                 ->label('Attempts from')
                                 ->numeric()
                                 ->minValue(0),
-
                             Forms\Components\TextInput::make('max')
                                 ->label('Attempts to')
                                 ->numeric()
@@ -195,67 +180,68 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         ]),
                     ])
                     ->query(function (Builder $q, array $data): Builder {
-                        $min = $data['min'] ?? null;
-                        $max = $data['max'] ?? null;
-
                         return $q
                             ->when(
-                                filled($min),
-                                fn (Builder $qq) => $qq->where('attempts', '>=', (int) $min)
+                                filled($data['min'] ?? null),
+                                fn (Builder $qq) => $qq->where('attempts', '>=', (int) $data['min'])
                             )
                             ->when(
-                                filled($max),
-                                fn (Builder $qq) => $qq->where('attempts', '<=', (int) $max)
+                                filled($data['max'] ?? null),
+                                fn (Builder $qq) => $qq->where('attempts', '<=', (int) $data['max'])
                             );
                     }),
 
-                /* ---------- IMPORTED ---------- */
                 Tables\Filters\SelectFilter::make('imported')
                     ->label('Imported')
                     ->options([
                         'yes' => 'Yes',
                         'no'  => 'No',
                     ])
-                    ->query(function (Builder $q, array $data): Builder {
-                        return match ($data['value'] ?? null) {
-                            'yes' => $q->whereNotNull('items_imported')->where('items_imported', '>', 0),
-                            'no'  => $q->where(fn ($qq) =>
-                                $qq->whereNull('items_imported')
-                                   ->orWhere('items_imported', '=', 0)
-                            ),
-                            default => $q,
-                        };
+                    ->query(fn (Builder $q, array $data) => match ($data['value'] ?? null) {
+                        'yes' => $q->where('items_imported', '>', 0),
+                        'no'  => $q->where(fn ($qq) =>
+                            $qq->whereNull('items_imported')
+                                ->orWhere('items_imported', '=', 0)
+                        ),
+                        default => $q,
                     }),
 
-                /* ---------- CREATED DATE RANGE (WORKING) ---------- */
+                /**
+                 * ✅ CREATED DATE RANGE — реально рабочий (Y-m-d + whereBetween)
+                 */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
                         Forms\Components\Grid::make(2)->schema([
-                            Forms\Components\DatePicker::make('from')
-                                ->label('Created from'),
-                            Forms\Components\DatePicker::make('to')
-                                ->label('Created to'),
+                            Forms\Components\DatePicker::make('from')->label('Created from'),
+                            Forms\Components\DatePicker::make('to')->label('Created to'),
                         ]),
                     ])
                     ->query(function (Builder $q, array $data): Builder {
+                        $fromRaw = $data['from'] ?? null;
+                        $toRaw   = $data['to'] ?? null;
+
+                        // DatePicker обычно отдаёт 'Y-m-d'. Делаем максимально строгий парс.
+                        $from = filled($fromRaw)
+                            ? Carbon::createFromFormat('Y-m-d', (string) $fromRaw)->startOfDay()
+                            : null;
+
+                        $to = filled($toRaw)
+                            ? Carbon::createFromFormat('Y-m-d', (string) $toRaw)->endOfDay()
+                            : null;
+
+                        // обе даты — самый надёжный вариант
+                        if ($from && $to) {
+                            return $q->whereBetween('created_at', [
+                                $from->toDateTimeString(),
+                                $to->toDateTimeString(),
+                            ]);
+                        }
+
+                        // одна из дат
                         return $q
-                            ->when(
-                                filled($data['from'] ?? null),
-                                fn (Builder $qq) => $qq->where(
-                                    'created_at',
-                                    '>=',
-                                    Carbon::parse($data['from'])->startOfDay()
-                                )
-                            )
-                            ->when(
-                                filled($data['to'] ?? null),
-                                fn (Builder $qq) => $qq->where(
-                                    'created_at',
-                                    '<=',
-                                    Carbon::parse($data['to'])->endOfDay()
-                                )
-                            );
+                            ->when($from, fn (Builder $qq) => $qq->where('created_at', '>=', $from->toDateTimeString()))
+                            ->when($to, fn (Builder $qq) => $qq->where('created_at', '<=', $to->toDateTimeString()));
                     }),
             ])
 
