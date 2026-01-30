@@ -128,8 +128,26 @@ class WorkOrderItems extends Command
                 ->first();
 
             if (! $token) {
-                throw new \RuntimeException("RefreshToken not found");
+
+                DB::table('orders_items_sync')
+                    ->where('id', $task->id)
+                    ->update([
+                        'status'      => 'skipped',
+                        'last_error'  => 'RefreshToken not found',
+                        'updated_at'  => now(),
+                    ]);
+
+                if ($debug) {
+                    $this->warn("orders_items_sync {$task->id} skipped: RefreshToken not found");
+                }
+
+                DB::commit();
+
+                // 🔴 КЛЮЧЕВО
+                // false = воркер НЕ будет ретраить эту задачу
+                return false;
             }
+
 
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
