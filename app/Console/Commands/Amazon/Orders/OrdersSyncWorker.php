@@ -114,8 +114,28 @@ class OrdersSyncWorker extends Command
                 ->first();
 
             if (! $token) {
-                throw new \RuntimeException("RefreshToken not found");
+
+                DB::table('orders_sync')
+                    ->where('id', $sync->id)
+                    ->update([
+                        'status'        => 'skipped',
+                        'error_message' => 'RefreshToken not found',
+                        'finished_at'   => now(),
+                        'updated_at'    => now(),
+                    ]);
+
+                if ($debug) {
+                    $this->warn("orders_sync {$sync->id} skipped: RefreshToken not found");
+                }
+
+                DB::commit();
+
+                // 🔴 КЛЮЧЕВОЕ:
+                // false = "ничего не обработали"
+                // воркер НЕ будет ретраить
+                return false;
             }
+
 
             DB::table('orders_sync')
                 ->where('id', $sync->id)
