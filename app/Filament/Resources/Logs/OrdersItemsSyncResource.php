@@ -9,7 +9,6 @@ use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Forms;
-use Filament\Notifications\Notification;
 use Illuminate\Database\Eloquent\Builder;
 use Carbon\Carbon;
 
@@ -22,97 +21,77 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     protected static ?string $navigationIcon = 'heroicon-o-queue-list';
     protected static ?int $navigationSort = 60;
 
-    private const SCREEN_DEBUG = true;
-
     public static function canAccess(): bool
     {
         return auth()->user()?->hasRole('super_admin') === true;
     }
 
+    /**
+     * 🔥 ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ФИЛАМЕНТ УВАЖАЕТ WHERE
+     */
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()
-            ->when(
-                session('active_marketplace'),
-                fn (Builder $q, $mp) => $q->where('marketplace_id', (int) $mp)
-            );
+        $q = parent::getEloquentQuery();
+
+        // marketplace
+        if ($mp = session('active_marketplace')) {
+            $q->where('marketplace_id', (int) $mp);
+        }
+
+        // 🔴 DATE FILTER (REAL, FINAL)
+        $filters = request()->input('tableFilters.created_period');
+
+        if (is_array($filters)) {
+            $from = $filters['from'] ?? null;
+            $to   = $filters['to'] ?? null;
+
+            if ($from) {
+                $q->where(
+                    'created_at',
+                    '>=',
+                    Carbon::createFromFormat('Y-m-d', $from)->startOfDay()
+                );
+            }
+
+            if ($to) {
+                $q->where(
+                    'created_at',
+                    '<=',
+                    Carbon::createFromFormat('Y-m-d', $to)->endOfDay()
+                );
+            }
+        }
+
+        return $q;
     }
 
     public static function table(Table $table): Table
     {
         return $table
             ->defaultSort('id', 'desc')
-            ->paginated([25, 50, 100])
+            ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
-
-            ->headerActions([
-                Tables\Actions\Action::make('debugSql')
-                    ->label('DEBUG SQL')
-                    ->color('danger')
-                    ->icon('heroicon-o-bug-ant')
-                    ->action(function () {
-                        $query = OrdersItemsSync::query();
-
-                        Notification::make()
-                            ->title('🔴 BASE QUERY SQL')
-                            ->danger()
-                            ->body(
-                                '<pre>'
-                                . e($query->toSql()) . "\n"
-                                . e(json_encode($query->getBindings()))
-                                . '</pre>'
-                            )
-                            ->send();
-                    }),
-            ])
 
             ->columns([
                 Tables\Columns\TextColumn::make('id')->sortable(),
-                Tables\Columns\TextColumn::make('amazon_order_id')->sortable(),
-                Tables\Columns\TextColumn::make('status')->sortable(),
+                Tables\Columns\TextColumn::make('amazon_order_id')->sortable()->searchable(),
+                Tables\Columns\TextColumn::make('status')->sortable()->badge(),
+                Tables\Columns\TextColumn::make('attempts')->sortable(),
                 Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
             ])
 
             ->filters([
+                // UI ФИЛЬТР (БЕЗ query!)
                 Tables\Filters\Filter::make('created_period')
-                    ->label('Created date (HARD DEBUG)')
+                    ->label('Created date')
                     ->form([
-                        Forms\Components\DatePicker::make('from'),
-                        Forms\Components\DatePicker::make('to'),
-                    ])
-                    ->query(function (Builder $q, array $data): Builder {
-
-                        if (self::SCREEN_DEBUG) {
-                            Notification::make()
-                                ->title('🔴 FILTER HIT')
-                                ->danger()
-                                ->body(
-                                    '<pre>'
-                                    . e(json_encode($data, JSON_PRETTY_PRINT))
-                                    . '</pre>'
-                                )
-                                ->send();
-                        }
-
-                        // 💣 ЖЁСТКИЙ ТЕСТ
-                        // ЕСЛИ ЭТО НЕ ОЧИСТИТ ТАБЛИЦУ — ФИЛЬТР ИГНОРИРУЕТСЯ
-                        $q->whereRaw('1 = 0');
-
-                        if (self::SCREEN_DEBUG) {
-                            Notification::make()
-                                ->title('🔴 FINAL SQL')
-                                ->danger()
-                                ->body(
-                                    '<pre>'
-                                    . e($q->toSql()) . "\n"
-                                    . e(json_encode($q->getBindings()))
-                                    . '</pre>'
-                                )
-                                ->send();
-                        }
-
-                        return $q;
-                    }),
+                        Forms\Components\Grid::make(2)->schema([
+                            Forms\Components\DatePicker::make('from')->label('From'),
+                            Forms\Components\DatePicker::make('to')->label('To'),
+                        ]),
+                    ]),
             ])
 
             ->actions([]);
