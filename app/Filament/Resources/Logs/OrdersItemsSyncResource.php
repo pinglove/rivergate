@@ -143,10 +143,16 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                     ->label('Created date')
                     ->form([
                         Forms\Components\Grid::make(2)->schema([
-                            Forms\Components\DatePicker::make('from')->label('From'),
-                            Forms\Components\DatePicker::make('to')->label('To'),
+                            Forms\Components\DatePicker::make('from')
+                                ->label('From')
+                                ->live(),
+
+                            Forms\Components\DatePicker::make('to')
+                                ->label('To')
+                                ->live(),
                         ]),
                     ]),
+
 
                 /**
                  * AMAZON ORDER ID
