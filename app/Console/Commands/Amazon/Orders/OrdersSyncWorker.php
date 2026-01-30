@@ -15,7 +15,10 @@ class OrdersSyncWorker extends Command
         {--once : Process single job and exit (debug only)}
         {--debug}';
 
-    protected $description = 'Amazon Orders sync worker (supervisor-ready)';
+    protected $description = 'Amazon Orders sync worker (production safe)';
+
+    private const MAX_ATTEMPTS = 5;
+    private const RETRY_DELAY_MINUTES = 5;
 
     private bool $shouldStop = false;
 
@@ -23,32 +26,22 @@ class OrdersSyncWorker extends Command
     {
         $debug     = (bool) $this->option('debug');
         $idleSleep = max(1, (int) $this->option('sleep'));
-
-        // debug-only controls
-        $limit = $debug ? max(0, (int) $this->option('limit')) : 0;
-        $once  = $debug ? (bool) $this->option('once') : false;
+        $limit     = $debug ? max(0, (int) $this->option('limit')) : 0;
+        $once      = $debug ? (bool) $this->option('once') : false;
 
         $processed = 0;
 
-        // graceful exit
         pcntl_async_signals(true);
         pcntl_signal(SIGTERM, fn () => $this->shouldStop = true);
         pcntl_signal(SIGINT, fn () => $this->shouldStop = true);
 
         if ($debug) {
-            $this->info('=== AMAZON ORDERS SYNC WORKER ===');
-            $this->line('mode=DEBUG');
-            $this->line('limit=' . ($limit ?: '∞'));
-            $this->line('once=' . ($once ? 'YES' : 'NO'));
-            $this->line('sleep=' . $idleSleep);
+            $this->info('=== AMAZON ORDERS SYNC WORKER (PROD SAFE) ===');
         }
 
         while (! $this->shouldStop) {
 
             if ($limit > 0 && $processed >= $limit) {
-                if ($debug) {
-                    $this->warn("debug limit {$limit} reached → exit");
-                }
                 break;
             }
 
@@ -58,24 +51,13 @@ class OrdersSyncWorker extends Command
                 $processed++;
 
                 if ($once) {
-                    if ($debug) {
-                        $this->warn('debug --once → exit');
-                    }
                     break;
                 }
 
                 continue;
             }
 
-            if ($debug) {
-                $this->line('idle…');
-            }
-
             sleep($idleSleep);
-        }
-
-        if ($debug) {
-            $this->warn('Worker exited gracefully');
         }
 
         return Command::SUCCESS;
@@ -83,13 +65,17 @@ class OrdersSyncWorker extends Command
 
     private function processOne(bool $debug): bool
     {
-        $now = Carbon::now();
+        $now = now();
 
         DB::beginTransaction();
 
         try {
             $sync = DB::table('orders_sync')
                 ->whereIn('status', ['pending', 'fail'])
+                ->where(function ($q) use ($now) {
+                    $q->whereNull('run_after')
+                      ->orWhere('run_after', '<=', $now);
+                })
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->first();
@@ -99,12 +85,37 @@ class OrdersSyncWorker extends Command
                 return false;
             }
 
+            // ⛔ HARD STOP: max attempts
+            if ($sync->attempts >= self::MAX_ATTEMPTS) {
+                DB::table('orders_sync')
+                    ->where('id', $sync->id)
+                    ->update([
+                        'status'        => 'skipped',
+                        'error_message' => 'Max attempts reached',
+                        'finished_at'   => now(),
+                        'updated_at'    => now(),
+                    ]);
+
+                DB::commit();
+                return false;
+            }
+
             $marketplace = DB::table('marketplaces')
                 ->where('id', $sync->marketplace_id)
                 ->first();
 
             if (! $marketplace || ! $marketplace->amazon_id) {
-                throw new \RuntimeException("marketplace.amazon_id missing");
+                DB::table('orders_sync')
+                    ->where('id', $sync->id)
+                    ->update([
+                        'status'        => 'skipped',
+                        'error_message' => 'Marketplace misconfigured',
+                        'finished_at'   => now(),
+                        'updated_at'    => now(),
+                    ]);
+
+                DB::commit();
+                return false;
             }
 
             $token = RefreshToken::query()
@@ -114,7 +125,6 @@ class OrdersSyncWorker extends Command
                 ->first();
 
             if (! $token) {
-
                 DB::table('orders_sync')
                     ->where('id', $sync->id)
                     ->update([
@@ -124,44 +134,25 @@ class OrdersSyncWorker extends Command
                         'updated_at'    => now(),
                     ]);
 
-                if ($debug) {
-                    $this->warn("orders_sync {$sync->id} skipped: RefreshToken not found");
-                }
-
                 DB::commit();
-
-                // 🔴 КЛЮЧЕВОЕ:
-                // false = "ничего не обработали"
-                // воркер НЕ будет ретраить
                 return false;
             }
 
-
+            // 🔒 CLAIM TASK
             DB::table('orders_sync')
                 ->where('id', $sync->id)
                 ->update([
-                    'status'     => 'processing',
-                    'started_at'=> $now,
-                    'updated_at'=> $now,
+                    'status'      => 'processing',
+                    'attempts'    => $sync->attempts + 1,
+                    'started_at'  => now(),
+                    'updated_at'  => now(),
                 ]);
 
             DB::commit();
 
         } catch (\Throwable $e) {
             DB::rollBack();
-
-            if (isset($sync)) {
-                DB::table('orders_sync')
-                    ->where('id', $sync->id)
-                    ->update([
-                        'status' => 'fail',
-                        'error_message' => $e->getMessage(),
-                        'updated_at' => now(),
-                    ]);
-            }
-
-            $this->error('DB ERROR: ' . $e->getMessage());
-            return true;
+            return false;
         }
 
         // ---------- NODE ----------
@@ -183,7 +174,7 @@ class OrdersSyncWorker extends Command
         ];
 
         if ($debug) {
-            $this->line("NODE request orders_sync_id={$sync->id}");
+            $this->line("NODE orders_sync_id={$sync->id}");
         }
 
         $process = proc_open(
@@ -199,18 +190,22 @@ class OrdersSyncWorker extends Command
 
         $json = $this->extractLastJson($stdout);
 
-        if (! $json || ($json['success'] ?? false) !== true) {
-            DB::table('orders_sync')
-                ->where('id', $sync->id)
-                ->update([
-                    'status' => 'fail',
-                    'error_message' => $json['error'] ?? 'Node error',
-                    'updated_at' => now(),
-                ]);
-
+        // ❌ Node did not return JSON
+        if (! $json) {
+            $this->retry($sync->id, 'Node returned no JSON');
             return true;
         }
 
+        if (($json['success'] ?? false) !== true) {
+            $this->retry(
+                $sync->id,
+                $json['error'] ?? 'Node error',
+                (int) ($json['retry_after_minutes'] ?? self::RETRY_DELAY_MINUTES)
+            );
+            return true;
+        }
+
+        // ✅ SUCCESS
         $orders = $json['data']['orders'] ?? [];
         $imported = 0;
 
@@ -222,11 +217,11 @@ class OrdersSyncWorker extends Command
                         'amazon_order_id' => $order['amazon_order_id'],
                     ],
                     [
-                        'user_id' => $sync->user_id,
-                        'order_status' => $order['order_status'] ?? 'Unknown',
+                        'user_id'        => $sync->user_id,
+                        'order_status'   => $order['order_status'] ?? 'Unknown',
                         'raw_order_json' => $order['raw_order_json'],
-                        'updated_at' => now(),
-                        'created_at' => now(),
+                        'updated_at'     => now(),
+                        'created_at'     => now(),
                     ]
                 );
                 $imported++;
@@ -243,11 +238,19 @@ class OrdersSyncWorker extends Command
                 ]);
         });
 
-        if ($debug) {
-            $this->info("orders_sync {$sync->id} completed, imported={$imported}");
-        }
-
         return true;
+    }
+
+    private function retry(int $id, string $error, int $delayMinutes = self::RETRY_DELAY_MINUTES): void
+    {
+        DB::table('orders_sync')
+            ->where('id', $id)
+            ->update([
+                'status'        => 'fail',
+                'run_after'     => now()->addMinutes(max(1, $delayMinutes)),
+                'error_message' => $error,
+                'updated_at'    => now(),
+            ]);
     }
 
     private function extractLastJson(string $stdout): ?array

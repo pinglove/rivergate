@@ -15,40 +15,31 @@ class WorkOrderItems extends Command
         {--once : Process single job and exit (debug only)}
         {--debug}';
 
-    protected $description = 'Order items worker (supervisor-ready)';
+    protected $description = 'Order items worker (production-safe)';
 
+    private const MAX_ATTEMPTS = 5;
     private bool $shouldStop = false;
 
     public function handle(): int
     {
         $debug     = (bool) $this->option('debug');
         $idleSleep = max(1, (int) $this->option('sleep'));
-
-        // debug-only controls
-        $limit = $debug ? max(0, (int) $this->option('limit')) : 0;
-        $once  = $debug ? (bool) $this->option('once') : false;
+        $limit     = $debug ? max(0, (int) $this->option('limit')) : 0;
+        $once      = $debug ? (bool) $this->option('once') : false;
 
         $processed = 0;
 
-        // graceful exit
         pcntl_async_signals(true);
         pcntl_signal(SIGTERM, fn () => $this->shouldStop = true);
         pcntl_signal(SIGINT, fn () => $this->shouldStop = true);
 
         if ($debug) {
-            $this->info('=== ORDER ITEMS WORKER ===');
-            $this->line('mode=DEBUG');
-            $this->line('limit=' . ($limit ?: '∞'));
-            $this->line('once=' . ($once ? 'YES' : 'NO'));
-            $this->line('sleep=' . $idleSleep);
+            $this->info('=== ORDER ITEMS WORKER (PRODUCTION SAFE) ===');
         }
 
         while (! $this->shouldStop) {
 
             if ($limit > 0 && $processed >= $limit) {
-                if ($debug) {
-                    $this->warn("debug limit {$limit} reached → exit");
-                }
                 break;
             }
 
@@ -58,24 +49,13 @@ class WorkOrderItems extends Command
                 $processed++;
 
                 if ($once) {
-                    if ($debug) {
-                        $this->warn('debug --once → exit');
-                    }
                     break;
                 }
 
                 continue;
             }
 
-            if ($debug) {
-                $this->line('idle…');
-            }
-
             sleep($idleSleep);
-        }
-
-        if ($debug) {
-            $this->warn('Worker exited gracefully');
         }
 
         return Command::SUCCESS;
@@ -83,7 +63,7 @@ class WorkOrderItems extends Command
 
     private function processOne(bool $debug): bool
     {
-        $now = Carbon::now();
+        $now = now();
 
         DB::beginTransaction();
 
@@ -103,14 +83,36 @@ class WorkOrderItems extends Command
                 return false;
             }
 
+            // ⛔ HARD STOP: max attempts
+            if ($task->attempts >= self::MAX_ATTEMPTS) {
+                DB::table('orders_items_sync')
+                    ->where('id', $task->id)
+                    ->update([
+                        'status'     => 'skipped',
+                        'last_error' => 'Max attempts reached',
+                        'updated_at' => now(),
+                    ]);
+
+                DB::commit();
+                return false;
+            }
+
             $order = DB::table('orders')
                 ->where('amazon_order_id', $task->amazon_order_id)
                 ->where('marketplace_id', $task->marketplace_id)
-                ->lockForUpdate()
                 ->first();
 
             if (! $order) {
-                throw new \RuntimeException("Order not found");
+                DB::table('orders_items_sync')
+                    ->where('id', $task->id)
+                    ->update([
+                        'status'     => 'skipped',
+                        'last_error' => 'Order not found',
+                        'updated_at' => now(),
+                    ]);
+
+                DB::commit();
+                return false;
             }
 
             $marketplace = DB::table('marketplaces')
@@ -118,7 +120,16 @@ class WorkOrderItems extends Command
                 ->first();
 
             if (! $marketplace || ! $marketplace->amazon_id) {
-                throw new \RuntimeException("Marketplace.amazon_id missing");
+                DB::table('orders_items_sync')
+                    ->where('id', $task->id)
+                    ->update([
+                        'status'     => 'skipped',
+                        'last_error' => 'Marketplace misconfigured',
+                        'updated_at' => now(),
+                    ]);
+
+                DB::commit();
+                return false;
             }
 
             $token = RefreshToken::query()
@@ -128,27 +139,19 @@ class WorkOrderItems extends Command
                 ->first();
 
             if (! $token) {
-
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
                     ->update([
-                        'status'      => 'skipped',
-                        'last_error'  => 'RefreshToken not found',
-                        'updated_at'  => now(),
+                        'status'     => 'skipped',
+                        'last_error' => 'RefreshToken not found',
+                        'updated_at' => now(),
                     ]);
 
-                if ($debug) {
-                    $this->warn("orders_items_sync {$task->id} skipped: RefreshToken not found");
-                }
-
                 DB::commit();
-
-                // 🔴 КЛЮЧЕВО
-                // false = воркер НЕ будет ретраить эту задачу
                 return false;
             }
 
-
+            // 🔒 CLAIM TASK
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
                 ->update([
@@ -161,19 +164,7 @@ class WorkOrderItems extends Command
 
         } catch (\Throwable $e) {
             DB::rollBack();
-
-            if (isset($task)) {
-                DB::table('orders_items_sync')
-                    ->where('id', $task->id)
-                    ->update([
-                        'status'     => 'failed',
-                        'last_error' => $e->getMessage(),
-                        'updated_at' => now(),
-                    ]);
-            }
-
-            $this->error('DB ERROR: ' . $e->getMessage());
-            return true;
+            return false;
         }
 
         // ---------- NODE ----------
@@ -194,10 +185,6 @@ class WorkOrderItems extends Command
             '--sp_api_region=' . $token->sp_api_region,
         ];
 
-        if ($debug) {
-            $this->line("NODE order_items task_id={$task->id}");
-        }
-
         $process = proc_open(
             implode(' ', array_map('escapeshellarg', $cmd)),
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -211,37 +198,52 @@ class WorkOrderItems extends Command
 
         $json = $this->extractLastJson($stdout);
 
-        if (($json['success'] ?? false) === true) {
-            DB::transaction(function () use ($task, $order) {
-                DB::table('orders_items_sync')
-                    ->where('id', $task->id)
-                    ->update([
-                        'status'     => 'completed',
-                        'updated_at' => now(),
-                    ]);
+        // ❌ Node did not return JSON → retry with backoff
+        if (! $json) {
+            $this->retry($task->id, 'Node returned no JSON');
+            return true;
+        }
 
-                DB::table('orders')
-                    ->where('id', $order->id)
-                    ->update([
-                        'items_status'      => 'completed',
-                        'items_imported_at' => now(),
-                        'updated_at'        => now(),
-                    ]);
-            });
-        } else {
+        if (($json['success'] ?? false) !== true) {
+            $this->retry(
+                $task->id,
+                $json['error'] ?? 'Node error',
+                (int) ($json['retry_after_minutes'] ?? 5)
+            );
+            return true;
+        }
+
+        // ✅ SUCCESS
+        DB::transaction(function () use ($task, $order) {
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
                 ->update([
-                    'status'     => 'failed',
-                    'last_error' => $json['error'] ?? 'unknown error',
-                    'run_after'  => isset($json['retry_after_minutes'])
-                        ? now()->addMinutes((int) $json['retry_after_minutes'])
-                        : null,
+                    'status'     => 'completed',
                     'updated_at' => now(),
                 ]);
-        }
+
+            DB::table('orders')
+                ->where('id', $order->id)
+                ->update([
+                    'items_status'      => 'completed',
+                    'items_imported_at' => now(),
+                    'updated_at'        => now(),
+                ]);
+        });
 
         return true;
+    }
+
+    private function retry(int $taskId, string $error, int $delayMinutes = 5): void
+    {
+        DB::table('orders_items_sync')
+            ->where('id', $taskId)
+            ->update([
+                'status'     => 'failed',
+                'last_error' => $error,
+                'run_after'  => now()->addMinutes(max(1, $delayMinutes)),
+                'updated_at' => now(),
+            ]);
     }
 
     private function extractLastJson(string $stdout): ?array
