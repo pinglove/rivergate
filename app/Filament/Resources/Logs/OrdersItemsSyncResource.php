@@ -92,13 +92,14 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
+            ->deferFilters(false) // 🔥 ВАЖНО: иначе фильтры НЕ применяются
+
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
             ->columns([
-                Tables\Columns\TextColumn::make('id')
-                    ->sortable(),
+                Tables\Columns\TextColumn::make('id')->sortable(),
 
                 Tables\Columns\TextColumn::make('amazon_order_id')
                     ->label('Amazon Order')
@@ -111,81 +112,54 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                     ->color(fn (string $state) => match ($state) {
                         'pending'     => 'gray',
                         'processing'  => 'warning',
-                        'success'     => 'success',
+                        'success',
                         'completed'   => 'success',
-                        'failed'      => 'danger',
+                        'failed',
                         'error'       => 'danger',
                         'skipped'     => 'secondary',
                         default       => 'secondary',
                     }),
 
-                Tables\Columns\TextColumn::make('attempts')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime()
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('started_at')
-                    ->dateTime()
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('finished_at')
-                    ->dateTime()
-                    ->sortable(),
+                Tables\Columns\TextColumn::make('attempts')->sortable(),
+                Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
             ])
 
             ->filters([
-                /**
-                 * CREATED DATE FILTER (UI ONLY)
-                 */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
                         Forms\Components\Grid::make(2)->schema([
-                            Forms\Components\DatePicker::make('from')
-                                ->label('From')
-                                ->live(),
-
-                            Forms\Components\DatePicker::make('to')
-                                ->label('To')
-                                ->live(),
+                            Forms\Components\DatePicker::make('from')->label('From'),
+                            Forms\Components\DatePicker::make('to')->label('To'),
                         ]),
                     ]),
 
-
-                /**
-                 * AMAZON ORDER ID
-                 */
                 Tables\Filters\Filter::make('amazon_order_id')
                     ->label('Amazon Order ID')
                     ->form([
-                        Forms\Components\TextInput::make('order')
-                            ->placeholder('408-1234567-1234567'),
+                        Forms\Components\TextInput::make('order'),
                     ]),
 
-                /**
-                 * STATUS
-                 */
                 Tables\Filters\Filter::make('status')
                     ->label('Status')
                     ->form([
-                        Forms\Components\Select::make('status')
-                            ->options([
-                                'pending'     => 'Pending',
-                                'processing'  => 'Processing',
-                                'success'     => 'Success',
-                                'completed'   => 'Completed',
-                                'failed'      => 'Failed',
-                                'error'       => 'Error',
-                                'skipped'     => 'Skipped',
-                            ])
-                            ->placeholder('Any'),
+                        Forms\Components\Select::make('status')->options([
+                            'pending'     => 'Pending',
+                            'processing'  => 'Processing',
+                            'success'     => 'Success',
+                            'completed'   => 'Completed',
+                            'failed'      => 'Failed',
+                            'error'       => 'Error',
+                            'skipped'     => 'Skipped',
+                        ]),
                     ]),
             ])
 
             ->actions([]);
     }
+
 
     public static function getPages(): array
     {
