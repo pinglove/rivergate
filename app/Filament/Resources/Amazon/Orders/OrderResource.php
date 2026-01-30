@@ -3,15 +3,13 @@
 namespace App\Filament\Resources\Amazon\Orders;
 
 use App\Models\Orders\Order;
+use App\Filament\Resources\Amazon\Orders\OrderResource\Pages;
+use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-
-use App\Filament\Resources\Amazon\Orders\OrderResource\Pages;
-
-// 🔐 Shield
-use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
 
 class OrderResource extends Resource implements HasShieldPermissions
 {
@@ -22,17 +20,26 @@ class OrderResource extends Resource implements HasShieldPermissions
     protected static ?string $navigationIcon = 'heroicon-o-shopping-cart';
     protected static ?int $navigationSort = 30;
 
+    /**
+     * 🔥 БАЗОВЫЙ QUERY
+     */
+    public static function getEloquentQuery(): Builder
+    {
+        $q = parent::getEloquentQuery();
+
+        if ($mp = session('active_marketplace')) {
+            $q->where('marketplace_id', (int) $mp);
+        }
+
+        return $q->orderByDesc('purchase_date');
+    }
+
     public static function table(Table $table): Table
     {
         return $table
-            ->query(
-                Order::query()
-                    ->when(
-                        session('active_marketplace'),
-                        fn (Builder $q, $mp) => $q->where('marketplace_id', $mp)
-                    )
-                    ->orderByDesc('purchase_date')
-            )
+            ->paginated([25, 50, 100, 200])
+            ->defaultPaginationPageOption(50)
+
             ->columns([
                 Tables\Columns\TextColumn::make('amazon_order_id')
                     ->label('Amazon Order')
@@ -46,8 +53,21 @@ class OrderResource extends Resource implements HasShieldPermissions
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('order_status')
+                    ->label('Status')
+                    ->sortable()
                     ->badge()
-                    ->sortable(),
+                    ->color(function (string $state) {
+                        return match ($state) {
+                            'Pending'               => 'gray',
+                            'Unshipped'             => 'warning',
+                            'PartiallyShipped'      => 'info',
+                            'Shipped'               => 'success',
+                            'Canceled'              => 'danger',
+                            'Unfulfillable'         => 'danger',
+                            'InvoiceUnconfirmed'    => 'secondary',
+                            default                 => 'secondary',
+                        };
+                    }),
 
                 Tables\Columns\TextColumn::make('purchase_date')
                     ->label('Purchased')
@@ -56,7 +76,9 @@ class OrderResource extends Resource implements HasShieldPermissions
 
                 Tables\Columns\TextColumn::make('order_total_amount')
                     ->label('Amount')
-                    ->money(fn ($record) => $record->order_total_currency),
+                    ->money(function ($record) {
+                        return $record->order_total_currency;
+                    }),
 
                 Tables\Columns\TextColumn::make('ship_country')
                     ->label('Country')
@@ -82,48 +104,50 @@ class OrderResource extends Resource implements HasShieldPermissions
                     ->label('MP')
                     ->sortable(),
             ])
+
             ->filters([
                 Tables\Filters\SelectFilter::make('order_status')
                     ->options([
-                        'Pending' => 'Pending',
-                        'Unshipped' => 'Unshipped',
-                        'PartiallyShipped' => 'PartiallyShipped',
-                        'Shipped' => 'Shipped',
-                        'Canceled' => 'Canceled',
+                        'Pending'            => 'Pending',
+                        'Unshipped'          => 'Unshipped',
+                        'PartiallyShipped'   => 'PartiallyShipped',
+                        'Shipped'            => 'Shipped',
+                        'Canceled'           => 'Canceled',
+                        'Unfulfillable'      => 'Unfulfillable',
+                        'InvoiceUnconfirmed' => 'InvoiceUnconfirmed',
                     ]),
 
                 Tables\Filters\SelectFilter::make('ship_country')
                     ->label('Country')
-                    ->options(fn () =>
-                        Order::query()
+                    ->options(function () {
+                        return Order::query()
                             ->whereNotNull('ship_country')
                             ->distinct()
                             ->orderBy('ship_country')
                             ->pluck('ship_country', 'ship_country')
-                            ->toArray()
-                    ),
+                            ->toArray();
+                    }),
 
                 Tables\Filters\Filter::make('purchase_date')
                     ->form([
-                        \Filament\Forms\Components\DatePicker::make('from')->label('From'),
-                        \Filament\Forms\Components\DatePicker::make('to')->label('To'),
+                        Forms\Components\DatePicker::make('from')->label('From'),
+                        Forms\Components\DatePicker::make('to')->label('To'),
                     ])
                     ->query(function (Builder $query, array $data) {
-                        $query
-                            ->when(
-                                $data['from'] ?? null,
-                                fn ($q, $date) => $q->whereDate('purchase_date', '>=', $date)
-                            )
-                            ->when(
-                                $data['to'] ?? null,
-                                fn ($q, $date) => $q->whereDate('purchase_date', '<=', $date)
-                            );
+                        if (!empty($data['from'])) {
+                            $query->whereDate('purchase_date', '>=', $data['from']);
+                        }
+
+                        if (!empty($data['to'])) {
+                            $query->whereDate('purchase_date', '<=', $data['to']);
+                        }
                     }),
 
                 Tables\Filters\TernaryFilter::make('is_prime')->label('Prime'),
                 Tables\Filters\TernaryFilter::make('is_business_order')->label('B2B'),
                 Tables\Filters\TernaryFilter::make('is_replacement_order')->label('Replacement'),
             ])
+
             ->actions([])
             ->bulkActions([]);
     }
@@ -135,9 +159,6 @@ class OrderResource extends Resource implements HasShieldPermissions
         ];
     }
 
-    /**
-     * 🔐 Read-only resource
-     */
     public static function getPermissionPrefixes(): array
     {
         return [

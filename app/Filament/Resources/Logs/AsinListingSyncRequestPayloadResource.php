@@ -3,52 +3,66 @@
 namespace App\Filament\Resources\Logs;
 
 use App\Models\Logs\AsinListingSyncRequestPayload;
+use App\Filament\Resources\Logs\AsinListingSyncRequestPayloadResource\Pages;
+use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
-
-use App\Filament\Resources\Logs\AsinListingSyncRequestPayloadResource\Pages;
-use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
+use Carbon\Carbon;
 
 class AsinListingSyncRequestPayloadResource extends Resource implements HasShieldPermissions
 {
     protected static ?string $model = AsinListingSyncRequestPayload::class;
 
     protected static ?string $navigationGroup = 'Logs';
-    protected static ?string $navigationLabel = 'ASIN Listing Sync/Payloads';
+    protected static ?string $navigationLabel = 'ASIN Listing Sync / Payloads';
     protected static ?string $navigationIcon = 'heroicon-o-code-bracket';
     protected static ?int $navigationSort = 22;
 
-    /* 🔐 Только super_admin */
     public static function canAccess(): bool
     {
         return auth()->user()?->hasRole('super_admin') === true;
     }
 
+    /**
+     * 🔥 ЭТАЛОН: базовый query
+     */
+    public static function getEloquentQuery(): Builder
+    {
+        $q = parent::getEloquentQuery()
+            ->join(
+                'asins_asin_listing_sync',
+                'asins_asin_listing_sync.id',
+                '=',
+                'asins_asin_listing_sync_request_payloads.request_id'
+            )
+            ->select('asins_asin_listing_sync_request_payloads.*');
+
+        if ($mp = session('active_marketplace')) {
+            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
+        }
+
+        return $q;
+    }
+
     public static function table(Table $table): Table
     {
         return $table
-            ->query(
-                AsinListingSyncRequestPayload::query()
-                    ->join(
-                        'asins_asin_listing_sync',
-                        'asins_asin_listing_sync.id',
-                        '=',
-                        'asins_asin_listing_sync_request_payloads.request_id'
-                    )
-                    ->when(
-                        session('active_marketplace'),
-                        fn (Builder $q, $mp) =>
-                            $q->where('asins_asin_listing_sync.marketplace_id', $mp)
-                    )
-                    ->select('asins_asin_listing_sync_request_payloads.*')
-            )
+            // свежие сверху
+            ->defaultSort('id', 'desc')
+
+            // 50 строк по умолчанию
+            ->paginated([25, 50, 100, 200])
+            ->defaultPaginationPageOption(50)
+
             ->columns([
                 Tables\Columns\TextColumn::make('id')->sortable(),
 
                 Tables\Columns\TextColumn::make('request_id')
+                    ->label('Request ID')
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('payload')
@@ -57,12 +71,64 @@ class AsinListingSyncRequestPayloadResource extends Resource implements HasShiel
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime(),
+                    ->dateTime()
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('updated_at')
-                    ->dateTime(),
+                    ->dateTime()
+                    ->sortable(),
             ])
-            ->actions([]) // никаких row actions
+
+            ->filters([
+                /**
+                 * Created date
+                 */
+                Tables\Filters\Filter::make('created_period')
+                    ->label('Created date')
+                    ->form([
+                        Forms\Components\Grid::make(2)->schema([
+                            Forms\Components\DatePicker::make('from')->label('From'),
+                            Forms\Components\DatePicker::make('to')->label('To'),
+                        ]),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['from'])) {
+                            $query->where(
+                                'asins_asin_listing_sync_request_payloads.created_at',
+                                '>=',
+                                Carbon::createFromFormat('Y-m-d', $data['from'])->startOfDay()
+                            );
+                        }
+
+                        if (!empty($data['to'])) {
+                            $query->where(
+                                'asins_asin_listing_sync_request_payloads.created_at',
+                                '<=',
+                                Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay()
+                            );
+                        }
+                    }),
+
+                /**
+                 * Request ID
+                 */
+                Tables\Filters\Filter::make('request_id')
+                    ->label('Request ID')
+                    ->form([
+                        Forms\Components\TextInput::make('request_id'),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['request_id'])) {
+                            $query->where(
+                                'asins_asin_listing_sync_request_payloads.request_id',
+                                (int) $data['request_id']
+                            );
+                        }
+                    }),
+            ])
+
+            ->actions([])
+
             ->bulkActions([
                 Tables\Actions\BulkAction::make('clear')
                     ->label('Clear')
@@ -70,7 +136,7 @@ class AsinListingSyncRequestPayloadResource extends Resource implements HasShiel
                     ->color('danger')
                     ->requiresConfirmation()
                     ->form([
-                        \Filament\Forms\Components\Select::make('period')
+                        Forms\Components\Select::make('period')
                             ->label('Период')
                             ->options([
                                 'all' => 'Все',
@@ -87,12 +153,11 @@ class AsinListingSyncRequestPayloadResource extends Resource implements HasShiel
                                 'asins_asin_listing_sync.id',
                                 '=',
                                 'asins_asin_listing_sync_request_payloads.request_id'
-                            )
-                            ->when(
-                                session('active_marketplace'),
-                                fn ($qq, $mp) =>
-                                    $qq->where('asins_asin_listing_sync.marketplace_id', $mp)
                             );
+
+                        if ($mp = session('active_marketplace')) {
+                            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
+                        }
 
                         if (($data['period'] ?? '3d') === '3d') {
                             $q->where(
@@ -122,9 +187,6 @@ class AsinListingSyncRequestPayloadResource extends Resource implements HasShiel
         ];
     }
 
-    /**
-     * 🔐 Только нужные Shield-права
-     */
     public static function getPermissionPrefixes(): array
     {
         return [

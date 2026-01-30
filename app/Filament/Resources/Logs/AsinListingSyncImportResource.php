@@ -3,14 +3,15 @@
 namespace App\Filament\Resources\Logs;
 
 use App\Models\Logs\AsinListingSyncImport;
+use App\Filament\Resources\Logs\AsinListingSyncImportResource\Pages;
+use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
-
-use App\Filament\Resources\Logs\AsinListingSyncImportResource\Pages;
-use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
+use Carbon\Carbon;
 
 class AsinListingSyncImportResource extends Resource implements HasShieldPermissions
 {
@@ -21,43 +22,133 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
     protected static ?string $navigationIcon = 'heroicon-o-document-text';
     protected static ?int $navigationSort = 23;
 
-    /* 🔐 Только super_admin */
     public static function canAccess(): bool
     {
         return auth()->user()?->hasRole('super_admin') === true;
     }
 
+    /**
+     * 🔥 ЭТАЛОН: базовый query
+     */
+    public static function getEloquentQuery(): Builder
+    {
+        $q = parent::getEloquentQuery()
+            ->join(
+                'asins_asin_listing_sync',
+                'asins_asin_listing_sync.id',
+                '=',
+                'asins_asin_listing_sync_imports.sync_id'
+            )
+            ->select('asins_asin_listing_sync_imports.*');
+
+        if ($mp = session('active_marketplace')) {
+            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
+        }
+
+        return $q;
+    }
+
     public static function table(Table $table): Table
     {
         return $table
-            ->query(
-                AsinListingSyncImport::query()
-                    ->join(
-                        'asins_asin_listing_sync',
-                        'asins_asin_listing_sync.id',
-                        '=',
-                        'asins_asin_listing_sync_imports.sync_id'
-                    )
-                    ->join(
-                        'marketplaces',
-                        'marketplaces.id',
-                        '=',
-                        'asins_asin_listing_sync.marketplace_id'
-                    )
-                    ->when(
-                        session('active_marketplace'),
-                        fn (Builder $q, $mp) => $q->where('marketplaces.id', $mp)
-                    )
-                    ->select('asins_asin_listing_sync_imports.*')
-            )
+            // свежие сверху
+            ->defaultSort('id', 'desc')
+
+            // 50 строк по умолчанию
+            ->paginated([25, 50, 100, 200])
+            ->defaultPaginationPageOption(50)
+
             ->columns([
-                Tables\Columns\TextColumn::make('id')->sortable(),
-                Tables\Columns\TextColumn::make('sync_id')->sortable(),
-                Tables\Columns\TextColumn::make('status')->badge(),
-                Tables\Columns\TextColumn::make('created_at')->dateTime(),
-                Tables\Columns\TextColumn::make('updated_at')->dateTime(),
+                Tables\Columns\TextColumn::make('id')
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('sync_id')
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('status')
+                    ->sortable()
+                    ->badge()
+                    ->color(function (string $state) {
+                        return match ($state) {
+                            'pending'     => 'gray',
+                            'processing'  => 'warning',
+                            'completed'   => 'success',
+                            'resolved'    => 'success',
+                            'success'     => 'success',
+                            'failed'      => 'danger',
+                            'error'       => 'danger',
+                            'skipped'     => 'secondary',
+                            default       => 'secondary',
+                        };
+                    }),
+
+                Tables\Columns\TextColumn::make('created_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('updated_at')
+                    ->dateTime()
+                    ->sortable(),
             ])
-            ->actions([]) // никаких row actions
+
+            ->filters([
+                /**
+                 * Created date
+                 */
+                Tables\Filters\Filter::make('created_period')
+                    ->label('Created date')
+                    ->form([
+                        Forms\Components\Grid::make(2)->schema([
+                            Forms\Components\DatePicker::make('from')->label('From'),
+                            Forms\Components\DatePicker::make('to')->label('To'),
+                        ]),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['from'])) {
+                            $query->where(
+                                'asins_asin_listing_sync_imports.created_at',
+                                '>=',
+                                Carbon::createFromFormat('Y-m-d', $data['from'])->startOfDay()
+                            );
+                        }
+
+                        if (!empty($data['to'])) {
+                            $query->where(
+                                'asins_asin_listing_sync_imports.created_at',
+                                '<=',
+                                Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay()
+                            );
+                        }
+                    }),
+
+                /**
+                 * Status
+                 */
+                Tables\Filters\Filter::make('status')
+                    ->label('Status')
+                    ->form([
+                        Forms\Components\Select::make('status')
+                            ->options([
+                                'pending'     => 'Pending',
+                                'processing'  => 'Processing',
+                                'completed'   => 'Completed',
+                                'resolved'    => 'Resolved',
+                                'success'     => 'Success',
+                                'failed'      => 'Failed',
+                                'error'       => 'Error',
+                                'skipped'     => 'Skipped',
+                            ])
+                            ->placeholder('Any'),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['status'])) {
+                            $query->where('status', $data['status']);
+                        }
+                    }),
+            ])
+
+            ->actions([])
+
             ->bulkActions([
                 Tables\Actions\BulkAction::make('clear')
                     ->label('Clear')
@@ -65,7 +156,7 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
                     ->color('danger')
                     ->requiresConfirmation()
                     ->form([
-                        \Filament\Forms\Components\Select::make('period')
+                        Forms\Components\Select::make('period')
                             ->label('Период')
                             ->options([
                                 'all' => 'Все',
@@ -76,25 +167,17 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
                     ])
                     ->action(function (array $data): void {
 
-                        $mp = session('active_marketplace');
-
                         $q = AsinListingSyncImport::query()
                             ->join(
                                 'asins_asin_listing_sync',
                                 'asins_asin_listing_sync.id',
                                 '=',
                                 'asins_asin_listing_sync_imports.sync_id'
-                            )
-                            ->join(
-                                'marketplaces',
-                                'marketplaces.id',
-                                '=',
-                                'asins_asin_listing_sync.marketplace_id'
-                            )
-                            ->when(
-                                $mp,
-                                fn ($qq) => $qq->where('marketplaces.id', $mp)
                             );
+
+                        if ($mp = session('active_marketplace')) {
+                            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
+                        }
 
                         if (($data['period'] ?? '3d') === '3d') {
                             $q->where(
@@ -104,7 +187,6 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
                             );
                         }
 
-                        // удаляем ТОЛЬКО imports
                         $ids = (clone $q)
                             ->select('asins_asin_listing_sync_imports.id')
                             ->pluck('id');
@@ -125,9 +207,6 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
         ];
     }
 
-    /**
-     * 🔐 Ограничиваем Shield-права ТОЛЬКО нужными
-     */
     public static function getPermissionPrefixes(): array
     {
         return [

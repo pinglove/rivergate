@@ -27,13 +27,12 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     }
 
     /**
-     * БАЗОВЫЙ QUERY (ТОЛЬКО ОБЩИЕ УСЛОВИЯ)
+     * 🔥 ЭТАЛОН: базовый query
      */
     public static function getEloquentQuery(): Builder
     {
         $q = parent::getEloquentQuery();
 
-        // marketplace
         if ($mp = session('active_marketplace')) {
             $q->where('marketplace_id', (int) $mp);
         }
@@ -60,15 +59,17 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
-                    ->color(fn (string $state) => match ($state) {
-                        'pending'     => 'gray',
-                        'processing'  => 'warning',
-                        'completed'   => 'success',
-                        'success'     => 'success',
-                        'failed'      => 'danger',
-                        'error'       => 'danger',
-                        'skipped'     => 'secondary',
-                        default       => 'secondary',
+                    ->color(function (string $state) {
+                        return match ($state) {
+                            'pending'     => 'gray',
+                            'processing'  => 'warning',
+                            'completed'   => 'success',
+                            'success'     => 'success',
+                            'failed'      => 'danger',
+                            'error'       => 'danger',
+                            'skipped'     => 'secondary',
+                            default       => 'secondary',
+                        };
                     }),
 
                 Tables\Columns\TextColumn::make('attempts')
@@ -89,7 +90,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
 
             ->filters([
                 /**
-                 * Created at period
+                 * Created date
                  */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
@@ -118,7 +119,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                     }),
 
                 /**
-                 * Amazon order id
+                 * Amazon Order ID
                  */
                 Tables\Filters\Filter::make('amazon_order_id')
                     ->label('Amazon Order ID')

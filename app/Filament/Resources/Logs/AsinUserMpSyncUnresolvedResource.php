@@ -3,40 +3,47 @@
 namespace App\Filament\Resources\Logs;
 
 use App\Models\Logs\AsinUserMpSyncUnresolved;
+use App\Filament\Resources\Logs\AsinUserMpSyncUnresolvedResource\Pages;
+use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
-
-use App\Filament\Resources\Logs\AsinUserMpSyncUnresolvedResource\Pages;
-use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
+use Carbon\Carbon;
 
 class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPermissions
 {
     protected static ?string $model = AsinUserMpSyncUnresolved::class;
 
     protected static ?string $navigationGroup = 'Logs';
-    protected static ?string $navigationLabel = 'ASIN Sync/Unresolved';
+    protected static ?string $navigationLabel = 'ASIN Sync / Unresolved';
     protected static ?string $navigationIcon = 'heroicon-o-exclamation-triangle';
     protected static ?int $navigationSort = 12;
 
-    /* 🔐 Только super_admin */
     public static function canAccess(): bool
     {
         return auth()->user()?->hasRole('super_admin') === true;
     }
 
+    public static function getEloquentQuery(): Builder
+    {
+        $q = parent::getEloquentQuery();
+
+        if ($mp = session('active_marketplace')) {
+            $q->where('marketplace_id', (int) $mp);
+        }
+
+        return $q;
+    }
+
     public static function table(Table $table): Table
     {
         return $table
-            ->query(
-                AsinUserMpSyncUnresolved::query()
-                    ->when(
-                        session('active_marketplace'),
-                        fn (Builder $q, $mp) => $q->where('marketplace_id', $mp)
-                    )
-            )
+            ->defaultSort('id', 'desc')
+            ->paginated([25, 50, 100, 200])
+            ->defaultPaginationPageOption(50)
+
             ->columns([
                 Tables\Columns\TextColumn::make('id')->sortable(),
 
@@ -59,10 +66,21 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('status')
-                    ->badge(),
+                    ->sortable()
+                    ->badge()
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'resolved'    => 'success', // ✅ ВАЖНО
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
+                    }),
 
-                Tables\Columns\TextColumn::make('attempts')
-                    ->sortable(),
+                Tables\Columns\TextColumn::make('attempts')->sortable(),
 
                 Tables\Columns\TextColumn::make('run_after')
                     ->dateTime()
@@ -73,12 +91,78 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime(),
+                    ->dateTime()
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('updated_at')
-                    ->dateTime(),
+                    ->dateTime()
+                    ->sortable(),
             ])
-            ->actions([]) // никаких row actions
+
+            ->filters([
+                Tables\Filters\Filter::make('created_period')
+                    ->label('Created date')
+                    ->form([
+                        Forms\Components\Grid::make(2)->schema([
+                            Forms\Components\DatePicker::make('from'),
+                            Forms\Components\DatePicker::make('to'),
+                        ]),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['from'])) {
+                            $query->where(
+                                'created_at',
+                                '>=',
+                                Carbon::createFromFormat('Y-m-d', $data['from'])->startOfDay()
+                            );
+                        }
+                        if (!empty($data['to'])) {
+                            $query->where(
+                                'created_at',
+                                '<=',
+                                Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay()
+                            );
+                        }
+                    }),
+
+                Tables\Filters\Filter::make('status')
+                    ->label('Status')
+                    ->form([
+                        Forms\Components\Select::make('status')->options([
+                            'pending'     => 'Pending',
+                            'processing'  => 'Processing',
+                            'completed'   => 'Completed',
+                            'resolved'    => 'Resolved',
+                            'success'     => 'Success',
+                            'failed'      => 'Failed',
+                            'error'       => 'Error',
+                            'skipped'     => 'Skipped',
+                        ]),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['status'])) {
+                            $query->where('status', $data['status']);
+                        }
+                    }),
+
+                Tables\Filters\Filter::make('seller_sku')
+                    ->label('SKU')
+                    ->form([
+                        Forms\Components\TextInput::make('seller_sku'),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['seller_sku'])) {
+                            $query->where(
+                                'seller_sku',
+                                'like',
+                                '%' . trim($data['seller_sku']) . '%'
+                            );
+                        }
+                    }),
+            ])
+
+            ->actions([])
+
             ->bulkActions([
                 Tables\Actions\BulkAction::make('clear')
                     ->label('Clear')
@@ -86,8 +170,7 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
                     ->color('danger')
                     ->requiresConfirmation()
                     ->form([
-                        \Filament\Forms\Components\Select::make('period')
-                            ->label('Период')
+                        Forms\Components\Select::make('period')
                             ->options([
                                 'all' => 'Все',
                                 '3d'  => 'Старше 3 дней',
@@ -96,12 +179,11 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
                             ->required(),
                     ])
                     ->action(function (array $data): void {
+                        $q = AsinUserMpSyncUnresolved::query();
 
-                        $q = AsinUserMpSyncUnresolved::query()
-                            ->when(
-                                session('active_marketplace'),
-                                fn ($qq, $mp) => $qq->where('marketplace_id', $mp)
-                            );
+                        if ($mp = session('active_marketplace')) {
+                            $q->where('marketplace_id', (int) $mp);
+                        }
 
                         if (($data['period'] ?? '3d') === '3d') {
                             $q->where('created_at', '<', now()->subDays(3));
@@ -119,14 +201,8 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
         ];
     }
 
-    /**
-     * 🔐 Только нужные Shield-права
-     */
     public static function getPermissionPrefixes(): array
     {
-        return [
-            'view_any',
-            'delete_any',
-        ];
+        return ['view_any', 'delete_any'];
     }
 }
