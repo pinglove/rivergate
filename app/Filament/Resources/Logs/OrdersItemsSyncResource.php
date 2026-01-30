@@ -41,7 +41,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
         }
 
         /**
-         * DATE FILTER
+         * DATE FILTER (created_at)
          */
         $period = request()->input('tableFilters.created_period');
 
@@ -65,16 +65,25 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
 
         /**
          * AMAZON ORDER ID FILTER
+         * (ТОЧНО как date — без value)
          */
-        if ($orderId = request()->input('tableFilters.amazon_order_id.value')) {
-            $q->where('amazon_order_id', 'like', '%' . trim($orderId) . '%');
+        $orderFilter = request()->input('tableFilters.amazon_order_id');
+
+        if (is_array($orderFilter) && !empty($orderFilter['order'])) {
+            $q->where(
+                'amazon_order_id',
+                'like',
+                '%' . trim($orderFilter['order']) . '%'
+            );
         }
 
         /**
          * STATUS FILTER
          */
-        if ($status = request()->input('tableFilters.status.value')) {
-            $q->where('status', $status);
+        $statusFilter = request()->input('tableFilters.status');
+
+        if (is_array($statusFilter) && !empty($statusFilter['status'])) {
+            $q->where('status', $statusFilter['status']);
         }
 
         return $q;
@@ -128,7 +137,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
 
             ->filters([
                 /**
-                 * DATE FILTER (UI ONLY)
+                 * CREATED DATE FILTER (UI ONLY)
                  */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
@@ -140,22 +149,22 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                     ]),
 
                 /**
-                 * AMAZON ORDER ID FILTER
+                 * AMAZON ORDER ID
                  */
                 Tables\Filters\Filter::make('amazon_order_id')
                     ->label('Amazon Order ID')
                     ->form([
-                        Forms\Components\TextInput::make('value')
+                        Forms\Components\TextInput::make('order')
                             ->placeholder('408-1234567-1234567'),
                     ]),
 
                 /**
-                 * STATUS FILTER
+                 * STATUS
                  */
                 Tables\Filters\Filter::make('status')
                     ->label('Status')
                     ->form([
-                        Forms\Components\Select::make('value')
+                        Forms\Components\Select::make('status')
                             ->options([
                                 'pending'     => 'Pending',
                                 'processing'  => 'Processing',
