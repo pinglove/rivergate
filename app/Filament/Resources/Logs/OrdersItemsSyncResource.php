@@ -27,39 +27,83 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     }
 
     /**
-     * ✅ ЕДИНСТВЕННОЕ МЕСТО,
-     * где Filament v3 гарантированно применяет WHERE
+     * ✅ Главное: таблица Filament живёт на Livewire.
+     * Фильтры могут прилетать:
+     *  - как query string: ?tableFilters[...]
+     *  - как Livewire payload: request('components')[0]['snapshot'] (json)
+     *
+     * Поэтому мы достаём tableFilters из обоих источников.
+     */
+    private static function getTableFiltersFromRequest(): array
+    {
+        // 1) обычный query string / form input
+        $filters = request()->input('tableFilters') ?? request()->query('tableFilters');
+        if (is_array($filters)) {
+            return $filters;
+        }
+
+        // 2) Livewire v3 payload
+        $components = request()->input('components');
+        if (is_array($components) && isset($components[0]['snapshot']) && is_string($components[0]['snapshot'])) {
+            $snapshot = json_decode($components[0]['snapshot'], true);
+
+            if (is_array($snapshot)) {
+                $data = $snapshot['data'] ?? null;
+
+                if (is_array($data)) {
+                    // чаще всего tableFilters лежит именно здесь
+                    $filters = $data['tableFilters'] ?? null;
+
+                    // на всякий (разные версии/сборки)
+                    if (!is_array($filters)) {
+                        $filters = $data['filters'] ?? null;
+                    }
+
+                    if (is_array($filters)) {
+                        return $filters;
+                    }
+                }
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Marketplace filter + Date filter — ТОЛЬКО здесь,
+     * потому что Filter::query() в твоём стеке реально игнорируется финальным SQL.
      */
     public static function getEloquentQuery(): Builder
     {
         $q = parent::getEloquentQuery();
 
-        /* ---------- marketplace ---------- */
-        if ($mp = session('active_marketplace')) {
-            $q->where('marketplace_id', (int) $mp);
-        }
+        // marketplace scope
+        $q->when(
+            session('active_marketplace'),
+            fn (Builder $qb, $mp) => $qb->where('marketplace_id', (int) $mp)
+        );
 
-        /* ---------- created_period (REAL DATE FILTER) ---------- */
-        $filters = request()->input('tableFilters.created_period');
+        // ✅ created_period date filter (реально применится к итоговому SQL)
+        $filters = self::getTableFiltersFromRequest();
+        $created = $filters['created_period'] ?? null;
 
-        if (is_array($filters)) {
-            $from = $filters['from'] ?? null;
-            $to   = $filters['to'] ?? null;
+        if (is_array($created)) {
+            $fromRaw = $created['from'] ?? null;
+            $toRaw   = $created['to'] ?? null;
 
-            if ($from) {
-                $q->where(
-                    'created_at',
-                    '>=',
-                    Carbon::createFromFormat('Y-m-d', $from)->startOfDay()
-                );
+            // DatePicker обычно даёт 'Y-m-d' (и в query string тоже так).
+            // На всякий: если вдруг пришёл Carbon/DateTime — приведём к строке.
+            $fromRaw = is_string($fromRaw) ? $fromRaw : (is_object($fromRaw) && method_exists($fromRaw, 'format') ? $fromRaw->format('Y-m-d') : null);
+            $toRaw   = is_string($toRaw) ? $toRaw : (is_object($toRaw) && method_exists($toRaw, 'format') ? $toRaw->format('Y-m-d') : null);
+
+            if ($fromRaw) {
+                $from = Carbon::createFromFormat('Y-m-d', $fromRaw)->startOfDay();
+                $q->where('created_at', '>=', $from);
             }
 
-            if ($to) {
-                $q->where(
-                    'created_at',
-                    '<=',
-                    Carbon::createFromFormat('Y-m-d', $to)->endOfDay()
-                );
+            if ($toRaw) {
+                $to = Carbon::createFromFormat('Y-m-d', $toRaw)->endOfDay();
+                $q->where('created_at', '<=', $to);
             }
         }
 
@@ -120,7 +164,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ])
 
             /* =========================================================
-             * COLUMNS
+             * COLUMNS — ВСЕ, КАК В ПРОДЕ
              * ========================================================= */
             ->columns([
                 Tables\Columns\TextColumn::make('id')
@@ -181,7 +225,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ])
 
             /* =========================================================
-             * FILTERS (UI ONLY)
+             * FILTERS — UI формы (дата без query!)
              * ========================================================= */
             ->filters([
 
@@ -202,16 +246,16 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         Forms\Components\TextInput::make('order_id')
                             ->label('Contains'),
                     ])
-                    ->query(fn (Builder $q, array $data) =>
-                        $q->when(
+                    ->query(function (Builder $q, array $data): Builder {
+                        return $q->when(
                             filled($data['order_id'] ?? null),
                             fn (Builder $qq) => $qq->where(
                                 'amazon_order_id',
                                 'like',
                                 '%' . $data['order_id'] . '%'
                             )
-                        )
-                    ),
+                        );
+                    }),
 
                 /* ---------- ATTEMPTS RANGE ---------- */
                 Tables\Filters\Filter::make('attempts_range')
@@ -228,8 +272,8 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                                 ->minValue(0),
                         ]),
                     ])
-                    ->query(fn (Builder $q, array $data) =>
-                        $q
+                    ->query(function (Builder $q, array $data): Builder {
+                        return $q
                             ->when(
                                 filled($data['min'] ?? null),
                                 fn (Builder $qq) => $qq->where('attempts', '>=', (int) $data['min'])
@@ -237,8 +281,8 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             ->when(
                                 filled($data['max'] ?? null),
                                 fn (Builder $qq) => $qq->where('attempts', '<=', (int) $data['max'])
-                            )
-                    ),
+                            );
+                    }),
 
                 /* ---------- IMPORTED ---------- */
                 Tables\Filters\SelectFilter::make('imported')
@@ -256,7 +300,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         default => $q,
                     }),
 
-                /* ---------- CREATED DATE (UI ONLY, LOGIC IN getEloquentQuery) ---------- */
+                /* ---------- CREATED DATE (UI only; logic in getEloquentQuery) ---------- */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
