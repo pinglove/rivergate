@@ -17,7 +17,7 @@ class WorkOrderItems extends Command
     protected $description = 'Order items worker (production-safe)';
 
     private const MAX_ATTEMPTS = 5;
-    private const DEFAULT_RETRY_MINUTES = 5;
+    private const DEFAULT_RETRY_MINUTES = 10;
 
     private bool $shouldStop = false;
 
@@ -30,7 +30,6 @@ class WorkOrderItems extends Command
 
         $processed = 0;
 
-        // graceful exit
         pcntl_async_signals(true);
         pcntl_signal(SIGTERM, fn () => $this->shouldStop = true);
         pcntl_signal(SIGINT, fn () => $this->shouldStop = true);
@@ -43,7 +42,6 @@ class WorkOrderItems extends Command
         }
 
         while (! $this->shouldStop) {
-
             if ($limit > 0 && $processed >= $limit) {
                 break;
             }
@@ -52,19 +50,13 @@ class WorkOrderItems extends Command
 
             if ($worked) {
                 $processed++;
-
                 if ($once) {
                     break;
                 }
-
                 continue;
             }
 
             sleep($idleSleep);
-        }
-
-        if ($debug) {
-            $this->warn('Worker exited gracefully');
         }
 
         return Command::SUCCESS;
@@ -79,10 +71,7 @@ class WorkOrderItems extends Command
         try {
             $task = DB::table('orders_items_sync')
                 ->where(function ($q) use ($now) {
-                    // ✅ pending берём всегда
                     $q->where('status', 'pending')
-
-                      // ✅ failed берём только если пришло время ретрая и attempts < MAX
                       ->orWhere(function ($q2) use ($now) {
                           $q2->where('status', 'failed')
                              ->where('attempts', '<', self::MAX_ATTEMPTS)
@@ -101,7 +90,6 @@ class WorkOrderItems extends Command
                 return false;
             }
 
-            // ⛔ HARD STOP: max attempts (на всякий случай)
             if ((int) $task->attempts >= self::MAX_ATTEMPTS) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
@@ -116,23 +104,14 @@ class WorkOrderItems extends Command
                 return false;
             }
 
-            // Важно: order для items обязан существовать
             $order = DB::table('orders')
                 ->where('amazon_order_id', $task->amazon_order_id)
                 ->where('marketplace_id', $task->marketplace_id)
                 ->first();
 
-            // ✅ Это НЕ terminal: возможно order ещё не импортирован → retry
+            // retryable: orders may arrive later
             if (! $order) {
-                DB::table('orders_items_sync')
-                    ->where('id', $task->id)
-                    ->update([
-                        'status'     => 'failed',
-                        'last_error' => 'Order not imported yet',
-                        'run_after'  => now()->addMinutes(self::DEFAULT_RETRY_MINUTES),
-                        'updated_at' => now(),
-                    ]);
-
+                $this->markFailed($task->id, (int) $task->attempts, 'Order not imported yet', self::DEFAULT_RETRY_MINUTES);
                 DB::commit();
                 return true;
             }
@@ -141,7 +120,6 @@ class WorkOrderItems extends Command
                 ->where('id', $order->marketplace_id)
                 ->first();
 
-            // ❌ terminal: конфиг сломан
             if (! $marketplace || ! $marketplace->amazon_id) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
@@ -162,7 +140,6 @@ class WorkOrderItems extends Command
                 ->where('status', 'active')
                 ->first();
 
-            // ❌ terminal: нет токена → бессмысленно ретраить
             if (! $token) {
                 DB::table('orders_items_sync')
                     ->where('id', $task->id)
@@ -177,7 +154,7 @@ class WorkOrderItems extends Command
                 return false;
             }
 
-            // 🔒 CLAIM TASK
+            // CLAIM
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
                 ->update([
@@ -197,7 +174,10 @@ class WorkOrderItems extends Command
             return false;
         }
 
-        // ---------- NODE ----------
+        if ($debug) {
+            $this->line("NODE order_items task_id={$task->id}");
+        }
+
         $cmd = [
             'node',
             'spapi/orders/importOrderItems.js',
@@ -215,10 +195,6 @@ class WorkOrderItems extends Command
             '--sp_api_region=' . $token->sp_api_region,
         ];
 
-        if ($debug) {
-            $this->line("NODE order_items task_id={$task->id}");
-        }
-
         $process = proc_open(
             implode(' ', array_map('escapeshellarg', $cmd)),
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -226,28 +202,25 @@ class WorkOrderItems extends Command
             base_path()
         );
 
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
+        $stdout = stream_get_contents($pipes[1]) ?: '';
+        $stderr = stream_get_contents($pipes[2]) ?: '';
         proc_close($process);
 
         $json = $this->extractLastJson($stdout);
 
-        // ❌ Node did not return JSON → retry with backoff
         if (! $json) {
-            $this->retry($task->id, 'Node returned no JSON', self::DEFAULT_RETRY_MINUTES);
+            $msg = $this->buildNodeError('Node returned no JSON', $stdout, $stderr);
+            $this->markFailed($task->id, (int) $task->attempts + 1, $msg, self::DEFAULT_RETRY_MINUTES);
             return true;
         }
 
         if (($json['success'] ?? false) !== true) {
-            $this->retry(
-                $task->id,
-                $json['error'] ?? 'Node error',
-                (int) ($json['retry_after_minutes'] ?? self::DEFAULT_RETRY_MINUTES)
-            );
+            $delay = (int) ($json['retry_after_minutes'] ?? self::DEFAULT_RETRY_MINUTES);
+            $msg = $this->buildNodeError($json['error'] ?? 'Node error', $stdout, $stderr);
+            $this->markFailed($task->id, (int) $task->attempts + 1, $msg, $delay);
             return true;
         }
 
-        // ✅ SUCCESS
         DB::transaction(function () use ($task, $order) {
             DB::table('orders_items_sync')
                 ->where('id', $task->id)
@@ -255,6 +228,7 @@ class WorkOrderItems extends Command
                     'status'      => 'completed',
                     'finished_at' => now(),
                     'updated_at'  => now(),
+                    'run_after'   => null,
                 ]);
 
             DB::table('orders')
@@ -269,16 +243,14 @@ class WorkOrderItems extends Command
         return true;
     }
 
-    private function retry(int $taskId, string $error, int $delayMinutes): void
+    private function markFailed(int $taskId, int $attempts, string $error, int $delayMinutes): void
     {
-        // Если уже дошли до MAX_ATTEMPTS — terminal
-        $row = DB::table('orders_items_sync')->where('id', $taskId)->first();
-        if ($row && (int) $row->attempts >= self::MAX_ATTEMPTS) {
+        if ($attempts >= self::MAX_ATTEMPTS) {
             DB::table('orders_items_sync')
                 ->where('id', $taskId)
                 ->update([
                     'status'      => 'skipped',
-                    'last_error'  => 'Max attempts reached: ' . $error,
+                    'last_error'  => $this->truncate($error, 3000),
                     'finished_at' => now(),
                     'updated_at'  => now(),
                 ]);
@@ -289,10 +261,46 @@ class WorkOrderItems extends Command
             ->where('id', $taskId)
             ->update([
                 'status'     => 'failed',
-                'last_error' => $error,
+                'last_error' => $this->truncate($error, 3000),
                 'run_after'  => now()->addMinutes(max(1, $delayMinutes)),
                 'updated_at' => now(),
             ]);
+    }
+
+    private function buildNodeError(string $headline, string $stdout, string $stderr): string
+    {
+        $out = trim($stdout);
+        $err = trim($stderr);
+
+        // часто stderr пустой, а ошибка в stdout
+        $tailStdout = $this->tail($out, 1200);
+        $tailStderr = $this->tail($err, 1200);
+
+        $msg = $headline;
+
+        if ($tailStderr !== '') {
+            $msg .= " | stderr_tail=" . $tailStderr;
+        }
+
+        if ($tailStdout !== '') {
+            $msg .= " | stdout_tail=" . $tailStdout;
+        }
+
+        return $msg;
+    }
+
+    private function tail(string $s, int $len): string
+    {
+        $s = trim($s);
+        if ($s === '') return '';
+        return mb_strlen($s) > $len ? mb_substr($s, -$len) : $s;
+    }
+
+    private function truncate(string $s, int $len): string
+    {
+        $s = trim($s);
+        if ($s === '') return $s;
+        return mb_strlen($s) > $len ? mb_substr($s, 0, $len) : $s;
     }
 
     private function extractLastJson(string $stdout): ?array
