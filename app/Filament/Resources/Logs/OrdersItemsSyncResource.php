@@ -33,7 +33,6 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     {
         $q = parent::getEloquentQuery();
 
-        // marketplace
         if ($mp = session('active_marketplace')) {
             $q->where('marketplace_id', (int) $mp);
         }
@@ -44,13 +43,13 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
+            ->hoverable() // ✅ ПОДСВЕТКА СТРОКИ ПРИ НАВЕДЕНИИ
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
             ->columns([
-                Tables\Columns\TextColumn::make('id')
-                    ->sortable(),
+                Tables\Columns\TextColumn::make('id')->sortable(),
 
                 Tables\Columns\TextColumn::make('amazon_order_id')
                     ->label('Amazon Order ID')
@@ -71,8 +70,7 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         default       => 'secondary',
                     }),
 
-                Tables\Columns\TextColumn::make('attempts')
-                    ->sortable(),
+                Tables\Columns\TextColumn::make('attempts')->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
