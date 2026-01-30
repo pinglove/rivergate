@@ -13,13 +13,13 @@ import SellingPartner from 'amazon-sp-api';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// SP-API env — override
+// SP-API env — override (может быть полезно для REGION и т.п., но НЕ для auth)
 dotenv.config({
   path: path.resolve(__dirname, '../.env'),
   override: true,
 });
 
-// Laravel env — no override
+// Laravel env — НЕ override (DB creds)
 dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
   override: false,
@@ -32,6 +32,10 @@ dotenv.config({
 function getArg(name) {
   const arg = process.argv.find(a => a.startsWith(`--${name}=`));
   return arg ? arg.split('=').slice(1).join('=') : null;
+}
+
+function jsonOut(obj) {
+  console.log(JSON.stringify(obj));
 }
 
 function money(obj) {
@@ -58,20 +62,33 @@ function jsonOrNull(v) {
  * ========================================================= */
 
 async function main() {
-  // Amazon MarketplaceId (A13V1IB3VIYZZH) — для SP-API
-  const marketplaceAmazonId = getArg('marketplace_id');
+  // Amazon MarketplaceId (A1PA6795UKMFR9) — для SP-API
+  const marketplaceAmazonId = (getArg('marketplace_id') || '').trim();
 
   const sellerId    = Number(getArg('seller_id'));
-  const workerId    = getArg('worker_id'); // только для логов
-  const orderIdsRaw = getArg('order_ids');
+  const workerId    = (getArg('worker_id') || '').trim(); // только для логов
+  const orderIdsRaw = (getArg('order_ids') || '').trim();
 
+  // ✅ AUTH — ТОЛЬКО из CLI args (КАК В РАБОЧИХ СКРИПТАХ)
+  const lwaRefreshToken   = (getArg('lwa_refresh_token') || '').trim();
+  const lwaClientId       = (getArg('lwa_client_id') || '').trim();
+  const lwaClientSecret   = (getArg('lwa_client_secret') || '').trim();
+
+  const awsAccessKeyId     = (getArg('aws_access_key_id') || '').trim();
+  const awsSecretAccessKey = (getArg('aws_secret_access_key') || '').trim();
+  const awsRoleArn         = (getArg('aws_role_arn') || '').trim();
+
+  const spApiRegion        = (getArg('sp_api_region') || process.env.SP_API_REGION || 'eu').trim();
+
+  // ---------- strict validation ----------
   if (!marketplaceAmazonId || !sellerId || !workerId || !orderIdsRaw) {
-    console.log(JSON.stringify({
+    jsonOut({
       success: false,
+      status: 'error',
       error_code: 'invalid_args',
       error_message: 'Required args missing (marketplace_id, seller_id, worker_id, order_ids)',
       retry_after_minutes: null,
-    }));
+    });
     return;
   }
 
@@ -80,55 +97,90 @@ async function main() {
     .map(v => v.trim())
     .filter(Boolean);
 
-  const db = await mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USERNAME,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE,
-    port: process.env.DB_PORT || 3306,
-  });
-
-  /* ---------------------------------------------------------
-   * Resolve INTERNAL marketplace_id by Amazon marketplace id
-   * --------------------------------------------------------- */
-  const [[mp]] = await db.execute(
-    `
-    SELECT id
-    FROM marketplaces
-    WHERE amazon_id = ?
-    LIMIT 1
-    `,
-    [marketplaceAmazonId]
-  );
-
-  if (!mp) {
-    console.log(JSON.stringify({
+  if (!orderIds.length) {
+    jsonOut({
       success: false,
-      error_code: 'marketplace_not_found',
-      error_message: `Marketplace not found for amazon_id=${marketplaceAmazonId}`,
+      status: 'error',
+      error_code: 'invalid_args',
+      error_message: 'order_ids is empty',
       retry_after_minutes: null,
-    }));
-    await db.end();
+    });
     return;
   }
 
-  const marketplaceId = mp.id;
+  const missingAuth = [];
+  if (!lwaRefreshToken)    missingAuth.push('lwa_refresh_token');
+  if (!lwaClientId)        missingAuth.push('lwa_client_id');
+  if (!lwaClientSecret)    missingAuth.push('lwa_client_secret');
+  if (!awsAccessKeyId)     missingAuth.push('aws_access_key_id');
+  if (!awsSecretAccessKey) missingAuth.push('aws_secret_access_key');
+  if (!awsRoleArn)         missingAuth.push('aws_role_arn');
 
-  const sp = new SellingPartner({
-    region: process.env.SP_API_REGION || 'eu',
-    refresh_token: process.env.LWA_REFRESH_TOKEN,
-    credentials: {
-      SELLING_PARTNER_APP_CLIENT_ID: process.env.LWA_CLIENT_ID,
-      SELLING_PARTNER_APP_CLIENT_SECRET: process.env.LWA_CLIENT_SECRET,
-      AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
-      AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
-      AWS_SELLING_PARTNER_ROLE: process.env.AWS_ROLE_ARN,
-    },
-  });
+  if (missingAuth.length) {
+    jsonOut({
+      success: false,
+      status: 'error',
+      error_code: 'auth_args_missing',
+      error_message: 'Missing auth args: ' + missingAuth.join(', '),
+      retry_after_minutes: null,
+    });
+    return;
+  }
 
-  let imported = 0;
+  let db;
 
   try {
+    // ---------- DB ----------
+    db = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USERNAME,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_DATABASE,
+      port: process.env.DB_PORT || 3306,
+    });
+
+    /* ---------------------------------------------------------
+     * Resolve INTERNAL marketplace_id by Amazon marketplace id
+     * --------------------------------------------------------- */
+    const [[mp]] = await db.execute(
+      `
+      SELECT id
+      FROM marketplaces
+      WHERE amazon_id = ?
+      LIMIT 1
+      `,
+      [marketplaceAmazonId]
+    );
+
+    if (!mp) {
+      jsonOut({
+        success: false,
+        status: 'error',
+        error_code: 'marketplace_not_found',
+        error_message: `Marketplace not found for amazon_id=${marketplaceAmazonId}`,
+        retry_after_minutes: null,
+      });
+      return;
+    }
+
+    const marketplaceId = mp.id;
+
+    // ---------- SP-API (AUTH FROM CLI!) ----------
+    const sp = new SellingPartner({
+      region: spApiRegion || 'eu',
+      refresh_token: lwaRefreshToken,
+      credentials: {
+        SELLING_PARTNER_APP_CLIENT_ID: lwaClientId,
+        SELLING_PARTNER_APP_CLIENT_SECRET: lwaClientSecret,
+        AWS_ACCESS_KEY_ID: awsAccessKeyId,
+        AWS_SECRET_ACCESS_KEY: awsSecretAccessKey,
+        AWS_SELLING_PARTNER_ROLE: awsRoleArn,
+      },
+    });
+
+    let imported = 0;
+
+    // ---------- FETCH + IMPORT ----------
     for (const amazonOrderId of orderIds) {
       let nextToken = null;
 
@@ -141,9 +193,7 @@ async function main() {
         });
 
         const payload = res?.payload ?? res;
-        const items   = Array.isArray(payload?.OrderItems)
-          ? payload.OrderItems
-          : [];
+        const items = Array.isArray(payload?.OrderItems) ? payload.OrderItems : [];
 
         nextToken = payload?.NextToken || null;
 
@@ -332,22 +382,26 @@ async function main() {
       } while (nextToken);
     }
 
-    console.log(JSON.stringify({
+    jsonOut({
       success: true,
       status: 'completed',
       data: { imported_items: imported },
       retry_after_minutes: null,
-    }));
+    });
 
   } catch (err) {
-    console.log(JSON.stringify({
+    // ВАЖНО: всегда JSON, даже на неожиданный крэш
+    jsonOut({
       success: false,
       status: 'fail',
-      error: err.message,
+      error_code: 'import_order_items_error',
+      error_message: err?.message || String(err),
       retry_after_minutes: 5,
-    }));
+    });
   } finally {
-    await db.end();
+    if (db) {
+      try { await db.end(); } catch {}
+    }
   }
 }
 
