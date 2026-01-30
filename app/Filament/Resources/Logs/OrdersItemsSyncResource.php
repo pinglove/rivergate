@@ -27,65 +27,34 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     }
 
     /**
-     * 🔥 ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ФИЛАМЕНТ УВАЖАЕТ WHERE
+     * БАЗОВЫЙ QUERY (ТОЛЬКО ТО, ЧТО НЕ ЗАВИСИТ ОТ ФИЛЬТРОВ)
      */
     public static function getEloquentQuery(): Builder
     {
         $q = parent::getEloquentQuery();
 
-        // marketplace
+        // marketplace — это OK, это session
         if ($mp = session('active_marketplace')) {
             $q->where('marketplace_id', (int) $mp);
-        }
-
-        // 🔴 DATE FILTER
-        $filters = request()->input('tableFilters.created_period');
-
-        if (is_array($filters)) {
-            $from = $filters['from'] ?? null;
-            $to   = $filters['to'] ?? null;
-
-            if ($from) {
-                $q->where(
-                    'created_at',
-                    '>=',
-                    Carbon::createFromFormat('Y-m-d', $from)->startOfDay()
-                );
-            }
-
-            if ($to) {
-                $q->where(
-                    'created_at',
-                    '<=',
-                    Carbon::createFromFormat('Y-m-d', $to)->endOfDay()
-                );
-            }
         }
 
         return $q;
     }
 
     /**
-     * ⚠️ ЖЁСТКИЙ DEBUG — ВСЕГДА
+     * 🔥 ЖЁСТКИЙ DEBUG — ВСЕГДА ВИДЕН
      */
-    protected static function debugData(): array
+    protected static function debugState(array $filterData = []): array
     {
-        $q = static::getEloquentQuery();
-
         return [
             'REQUEST' => [
-                'full_url' => request()->fullUrl(),
                 'method' => request()->method(),
                 'is_livewire' => request()->hasHeader('X-Livewire'),
+                'url' => request()->fullUrl(),
             ],
-            'TABLE_FILTERS' => request()->input('tableFilters'),
-            'CREATED_PERIOD' => request()->input('tableFilters.created_period'),
+            'FILTER_DATA_FROM_FILAMENT' => $filterData,
             'SESSION' => [
                 'active_marketplace' => session('active_marketplace'),
-            ],
-            'SQL' => [
-                'query' => $q->toSql(),
-                'bindings' => $q->getBindings(),
             ],
         ];
     }
@@ -93,29 +62,32 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
-            ->deferFilters(false)
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
             ->columns([
                 /**
-                 * 🔥 DEBUG BLOCK (ALWAYS VISIBLE)
+                 * 🔥 DEBUG BLOCK — ВСЕГДА
                  */
                 Tables\Columns\TextColumn::make('__DEBUG__')
-                    ->label('⚠ DEBUG (request / filters / SQL)')
-                    ->state(fn () => json_encode(
-                        self::debugData(),
-                        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
-                    ))
+                    ->label('⚠ DEBUG (Filament filters / SQL)')
+                    ->state(function () {
+                        // SQL без фильтров (база)
+                        $base = static::getEloquentQuery();
+
+                        return json_encode([
+                            'BASE_SQL' => [
+                                'query' => $base->toSql(),
+                                'bindings' => $base->getBindings(),
+                            ],
+                        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+                    })
                     ->wrap()
                     ->extraAttributes([
-                        'class' => 'font-mono text-xs text-red-600 bg-gray-100',
+                        'class' => 'font-mono text-xs text-red-700 bg-gray-100',
                     ]),
 
-                /**
-                 * REAL COLUMNS
-                 */
                 Tables\Columns\TextColumn::make('id')->sortable(),
                 Tables\Columns\TextColumn::make('amazon_order_id')->sortable()->searchable(),
                 Tables\Columns\TextColumn::make('status')->sortable()->badge(),
@@ -126,6 +98,10 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ])
 
             ->filters([
+                /**
+                 * ✅ ЕДИНСТВЕННО ПРАВИЛЬНЫЙ ФИЛЬТР ПО ДАТЕ
+                 * (Livewire state → query)
+                 */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
@@ -133,7 +109,29 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             Forms\Components\DatePicker::make('from')->label('From'),
                             Forms\Components\DatePicker::make('to')->label('To'),
                         ]),
-                    ]),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        /**
+                         * 🔥 DEBUG ПРЯМО В SQL
+                         */
+                        logger()->debug('[OrdersItemsSync] filter data', $data);
+
+                        if (!empty($data['from'])) {
+                            $query->where(
+                                'created_at',
+                                '>=',
+                                Carbon::createFromFormat('Y-m-d', $data['from'])->startOfDay()
+                            );
+                        }
+
+                        if (!empty($data['to'])) {
+                            $query->where(
+                                'created_at',
+                                '<=',
+                                Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay()
+                            );
+                        }
+                    }),
             ])
 
             ->actions([]);
