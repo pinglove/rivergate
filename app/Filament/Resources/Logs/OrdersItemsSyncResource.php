@@ -33,57 +33,33 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     {
         $q = parent::getEloquentQuery();
 
-        /**
-         * marketplace
-         */
+        // marketplace
         if ($mp = session('active_marketplace')) {
             $q->where('marketplace_id', (int) $mp);
         }
 
-        /**
-         * DATE FILTER (created_at)
-         */
-        $period = request()->input('tableFilters.created_period');
+        // 🔴 DATE FILTER (REAL, FINAL)
+        $filters = request()->input('tableFilters.created_period');
 
-        if (is_array($period)) {
-            if (!empty($period['from'])) {
+        if (is_array($filters)) {
+            $from = $filters['from'] ?? null;
+            $to   = $filters['to'] ?? null;
+
+            if ($from) {
                 $q->where(
                     'created_at',
                     '>=',
-                    Carbon::createFromFormat('Y-m-d', $period['from'])->startOfDay()
+                    Carbon::createFromFormat('Y-m-d', $from)->startOfDay()
                 );
             }
 
-            if (!empty($period['to'])) {
+            if ($to) {
                 $q->where(
                     'created_at',
                     '<=',
-                    Carbon::createFromFormat('Y-m-d', $period['to'])->endOfDay()
+                    Carbon::createFromFormat('Y-m-d', $to)->endOfDay()
                 );
             }
-        }
-
-        /**
-         * AMAZON ORDER ID FILTER
-         * (ТОЧНО как date — без value)
-         */
-        $orderFilter = request()->input('tableFilters.amazon_order_id');
-
-        if (is_array($orderFilter) && !empty($orderFilter['order'])) {
-            $q->where(
-                'amazon_order_id',
-                'like',
-                '%' . trim($orderFilter['order']) . '%'
-            );
-        }
-
-        /**
-         * STATUS FILTER
-         */
-        $statusFilter = request()->input('tableFilters.status');
-
-        if (is_array($statusFilter) && !empty($statusFilter['status'])) {
-            $q->where('status', $statusFilter['status']);
         }
 
         return $q;
@@ -92,41 +68,51 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
-            ->deferFilters(false) // 🔥 ВАЖНО: иначе фильтры НЕ применяются
-
             ->defaultSort('id', 'desc')
             ->paginated([25, 50, 100, 200])
             ->defaultPaginationPageOption(50)
 
             ->columns([
-                Tables\Columns\TextColumn::make('id')->sortable(),
+                Tables\Columns\TextColumn::make('id')
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('amazon_order_id')
-                    ->label('Amazon Order')
                     ->sortable()
                     ->searchable(),
 
+                // ✅ ТОЛЬКО ЗДЕСЬ ИЗМЕНЕНИЕ
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
                     ->color(fn (string $state) => match ($state) {
                         'pending'     => 'gray',
                         'processing'  => 'warning',
-                        'success',
+                        'success'     => 'success',
                         'completed'   => 'success',
-                        'failed',
+                        'failed'      => 'danger',
                         'error'       => 'danger',
                         'skipped'     => 'secondary',
                         default       => 'secondary',
                     }),
 
-                Tables\Columns\TextColumn::make('attempts')->sortable(),
-                Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
-                Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
-                Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('attempts')
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('created_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('started_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('finished_at')
+                    ->dateTime()
+                    ->sortable(),
             ])
 
             ->filters([
+                // UI ФИЛЬТР (БЕЗ query!)
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
                     ->form([
@@ -135,31 +121,10 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                             Forms\Components\DatePicker::make('to')->label('To'),
                         ]),
                     ]),
-
-                Tables\Filters\Filter::make('amazon_order_id')
-                    ->label('Amazon Order ID')
-                    ->form([
-                        Forms\Components\TextInput::make('order'),
-                    ]),
-
-                Tables\Filters\Filter::make('status')
-                    ->label('Status')
-                    ->form([
-                        Forms\Components\Select::make('status')->options([
-                            'pending'     => 'Pending',
-                            'processing'  => 'Processing',
-                            'success'     => 'Success',
-                            'completed'   => 'Completed',
-                            'failed'      => 'Failed',
-                            'error'       => 'Error',
-                            'skipped'     => 'Skipped',
-                        ]),
-                    ]),
             ])
 
             ->actions([]);
     }
-
 
     public static function getPages(): array
     {
