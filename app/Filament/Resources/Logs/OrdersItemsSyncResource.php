@@ -27,36 +27,18 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
     }
 
     /**
-     * БАЗОВЫЙ QUERY (ТОЛЬКО ТО, ЧТО НЕ ЗАВИСИТ ОТ ФИЛЬТРОВ)
+     * БАЗОВЫЙ QUERY (ТОЛЬКО ОБЩИЕ УСЛОВИЯ)
      */
     public static function getEloquentQuery(): Builder
     {
         $q = parent::getEloquentQuery();
 
-        // marketplace — это OK, это session
+        // marketplace
         if ($mp = session('active_marketplace')) {
             $q->where('marketplace_id', (int) $mp);
         }
 
         return $q;
-    }
-
-    /**
-     * 🔥 ЖЁСТКИЙ DEBUG — ВСЕГДА ВИДЕН
-     */
-    protected static function debugState(array $filterData = []): array
-    {
-        return [
-            'REQUEST' => [
-                'method' => request()->method(),
-                'is_livewire' => request()->hasHeader('X-Livewire'),
-                'url' => request()->fullUrl(),
-            ],
-            'FILTER_DATA_FROM_FILAMENT' => $filterData,
-            'SESSION' => [
-                'active_marketplace' => session('active_marketplace'),
-            ],
-        ];
     }
 
     public static function table(Table $table): Table
@@ -67,40 +49,47 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ->defaultPaginationPageOption(50)
 
             ->columns([
-                /**
-                 * 🔥 DEBUG BLOCK — ВСЕГДА
-                 */
-                Tables\Columns\TextColumn::make('__DEBUG__')
-                    ->label('⚠ DEBUG (Filament filters / SQL)')
-                    ->state(function () {
-                        // SQL без фильтров (база)
-                        $base = static::getEloquentQuery();
+                Tables\Columns\TextColumn::make('id')
+                    ->sortable(),
 
-                        return json_encode([
-                            'BASE_SQL' => [
-                                'query' => $base->toSql(),
-                                'bindings' => $base->getBindings(),
-                            ],
-                        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-                    })
-                    ->wrap()
-                    ->extraAttributes([
-                        'class' => 'font-mono text-xs text-red-700 bg-gray-100',
-                    ]),
+                Tables\Columns\TextColumn::make('amazon_order_id')
+                    ->label('Amazon Order ID')
+                    ->sortable()
+                    ->searchable(),
 
-                Tables\Columns\TextColumn::make('id')->sortable(),
-                Tables\Columns\TextColumn::make('amazon_order_id')->sortable()->searchable(),
-                Tables\Columns\TextColumn::make('status')->sortable()->badge(),
-                Tables\Columns\TextColumn::make('attempts')->sortable(),
-                Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
-                Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
-                Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('status')
+                    ->sortable()
+                    ->badge()
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
+                    }),
+
+                Tables\Columns\TextColumn::make('attempts')
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('created_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('started_at')
+                    ->dateTime()
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('finished_at')
+                    ->dateTime()
+                    ->sortable(),
             ])
 
             ->filters([
                 /**
-                 * ✅ ЕДИНСТВЕННО ПРАВИЛЬНЫЙ ФИЛЬТР ПО ДАТЕ
-                 * (Livewire state → query)
+                 * Created at period
                  */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
@@ -111,11 +100,6 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                         ]),
                     ])
                     ->query(function (Builder $query, array $data) {
-                        /**
-                         * 🔥 DEBUG ПРЯМО В SQL
-                         */
-                        logger()->debug('[OrdersItemsSync] filter data', $data);
-
                         if (!empty($data['from'])) {
                             $query->where(
                                 'created_at',
@@ -130,6 +114,49 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                                 '<=',
                                 Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay()
                             );
+                        }
+                    }),
+
+                /**
+                 * Amazon order id
+                 */
+                Tables\Filters\Filter::make('amazon_order_id')
+                    ->label('Amazon Order ID')
+                    ->form([
+                        Forms\Components\TextInput::make('order')
+                            ->placeholder('304-1234567-1234567'),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['order'])) {
+                            $query->where(
+                                'amazon_order_id',
+                                'like',
+                                '%' . trim($data['order']) . '%'
+                            );
+                        }
+                    }),
+
+                /**
+                 * Status
+                 */
+                Tables\Filters\Filter::make('status')
+                    ->label('Status')
+                    ->form([
+                        Forms\Components\Select::make('status')
+                            ->options([
+                                'pending'     => 'Pending',
+                                'processing'  => 'Processing',
+                                'completed'   => 'Completed',
+                                'success'     => 'Success',
+                                'failed'      => 'Failed',
+                                'error'       => 'Error',
+                                'skipped'     => 'Skipped',
+                            ])
+                            ->placeholder('Any'),
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        if (!empty($data['status'])) {
+                            $query->where('status', $data['status']);
                         }
                     }),
             ])
