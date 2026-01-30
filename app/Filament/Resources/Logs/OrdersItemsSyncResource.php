@@ -73,42 +73,13 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
             ->defaultPaginationPageOption(50)
 
             ->columns([
-                Tables\Columns\TextColumn::make('id')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('amazon_order_id')
-                    ->sortable()
-                    ->searchable(),
-
-                // ✅ ТОЛЬКО ЗДЕСЬ ИЗМЕНЕНИЕ
-                Tables\Columns\TextColumn::make('status')
-                    ->sortable()
-                    ->badge()
-                    ->color(fn (string $state) => match ($state) {
-                        'pending'     => 'gray',
-                        'processing'  => 'warning',
-                        'success'     => 'success',
-                        'completed'   => 'success',
-                        'failed'      => 'danger',
-                        'error'       => 'danger',
-                        'skipped'     => 'secondary',
-                        default       => 'secondary',
-                    }),
-
-                Tables\Columns\TextColumn::make('attempts')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime()
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('started_at')
-                    ->dateTime()
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('finished_at')
-                    ->dateTime()
-                    ->sortable(),
+                Tables\Columns\TextColumn::make('id')->sortable(),
+                Tables\Columns\TextColumn::make('amazon_order_id')->sortable()->searchable(),
+                Tables\Columns\TextColumn::make('status')->sortable()->badge(),
+                Tables\Columns\TextColumn::make('attempts')->sortable(),
+                Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('started_at')->dateTime()->sortable(),
+                Tables\Columns\TextColumn::make('finished_at')->dateTime()->sortable(),
             ])
 
             ->filters([
