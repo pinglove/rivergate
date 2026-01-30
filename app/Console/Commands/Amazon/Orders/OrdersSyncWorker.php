@@ -203,6 +203,7 @@ class OrdersSyncWorker extends Command
                     ],
                     [
                         'user_id' => $sync->user_id,
+                        'order_status' => $order['order_status'] ?? 'Unknown',
                         'raw_order_json' => $order['raw_order_json'],
                         'updated_at' => now(),
                         'created_at' => now(),
