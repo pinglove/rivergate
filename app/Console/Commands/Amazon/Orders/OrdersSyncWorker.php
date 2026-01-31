@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use App\Models\Amazon\RefreshToken;
+use Throwable;
 
 class OrdersSyncWorker extends Command
 {
@@ -37,6 +38,19 @@ class OrdersSyncWorker extends Command
 
         if ($debug) {
             $this->info('=== AMAZON ORDERS SYNC WORKER (DEBUG MODE) ===');
+
+            DB::listen(function ($query) {
+                $bindings = array_map(
+                    fn ($b) => is_string($b) ? "'{$b}'" : (is_null($b) ? 'NULL' : $b),
+                    $query->bindings
+                );
+
+                $this->line('');
+                $this->line('🧠 SQL:');
+                $this->line($query->sql);
+                $this->line('📦 Bindings: [' . implode(', ', $bindings) . ']');
+                $this->line('⏱ Time: ' . $query->time . ' ms');
+            });
         }
 
         while (! $this->shouldStop) {
@@ -148,8 +162,9 @@ class OrdersSyncWorker extends Command
 
             DB::commit();
 
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             DB::rollBack();
+            $this->error('DB ERROR: ' . $e->getMessage());
             return false;
         }
 
@@ -160,8 +175,7 @@ class OrdersSyncWorker extends Command
             '--request_id=' . $sync->id,
             '--marketplace_id=' . $marketplace->amazon_id,
             '--from=' . Carbon::parse($sync->from_date)->toDateString(),
-            '--to='   . Carbon::parse($sync->to_date)->toDateString(),
-
+            '--to=' . Carbon::parse($sync->to_date)->toDateString(),
             '--lwa_refresh_token=' . $token->lwa_refresh_token,
             '--lwa_client_id=' . $token->lwa_client_id,
             '--lwa_client_secret=' . $token->lwa_client_secret,
@@ -171,22 +185,17 @@ class OrdersSyncWorker extends Command
             '--sp_api_region=' . $token->sp_api_region,
         ];
 
-        // 🔎 DEBUG: реальная shell-команда
         $cmdString = implode(' ', array_map('escapeshellarg', $cmd));
 
         if ($debug) {
             $this->line('');
-            $this->line("NODE CMD (orders_sync_id={$sync->id}):");
+            $this->line('🚀 NODE CMD:');
             $this->line($cmdString);
-            $this->line('');
         }
 
         $process = proc_open(
             $cmdString,
-            [
-                1 => ['pipe', 'w'], // stdout
-                2 => ['pipe', 'w'], // stderr
-            ],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
             base_path()
         );
@@ -196,18 +205,13 @@ class OrdersSyncWorker extends Command
         proc_close($process);
 
         if ($debug && trim($stderr) !== '') {
-            $this->error("NODE STDERR:");
+            $this->error('NODE STDERR:');
             $this->line($stderr);
         }
 
         $json = $this->extractLastJson($stdout);
 
-        if (! $json) {
-            $this->retry($sync->id, 'Node returned no JSON');
-            return true;
-        }
-
-        if (($json['success'] ?? false) !== true) {
+        if (! $json || ($json['success'] ?? false) !== true) {
             $this->retry(
                 $sync->id,
                 $json['error'] ?? 'Node error',
@@ -215,75 +219,61 @@ class OrdersSyncWorker extends Command
             );
             return true;
         }
-        /////////////////////////////////////////////////////////
-        // ✅ SUCCESS
-        $orders = $json['data']['orders'] ?? [];
 
+        // ---------- UPSERT ----------
+        $orders = $json['data']['orders'] ?? [];
         $rows = [];
 
-        foreach ($orders as $order) {
+        foreach ($orders as $o) {
             $rows[] = [
-                // 🔑 keys
-                'user_id'         => $sync->user_id,
-                'marketplace_id'  => $sync->marketplace_id,
-                'amazon_order_id' => $order['amazon_order_id'],
-
-                // 🧾 basic data
-                'merchant_order_id' => $order['merchant_order_id'] ?? null,
-                'purchase_date'     => $order['purchase_date'] ?? null,
-                'last_updated_date' => $order['last_updated_date'] ?? null,
-
-                'order_status' => $order['order_status'] ?? 'Unknown',
-                'items_status' => 'pending',
-
-                // 📦 meta
-                'order_type'          => $order['order_type'] ?? null,
-                'fulfillment_channel' => $order['fulfillment_channel'] ?? null,
-                'sales_channel'       => $order['sales_channel'] ?? null,
-                'payment_method'      => $order['payment_method'] ?? null,
-
-                // 🧠 json
-                'payment_method_details_json' => $order['payment_method_details_json'] ?? null,
-                'buyer_info_json'             => $order['buyer_info_json'] ?? null,
-                'raw_order_json'              => $order['raw_order_json'] ?? null,
-
-                // 🚨 NOT NULL flags (КРИТИЧНО)
-                'is_business_order' => (int) ($order['is_business_order'] ?? 0),
-                'is_iba'            => (int) ($order['is_iba'] ?? 0),
-
-                // ⏱ timestamps
-                'created_at' => now(),
-                'updated_at' => now(),
+                'user_id'                => $sync->user_id,
+                'marketplace_id'         => $sync->marketplace_id,
+                'amazon_order_id'        => $o['amazon_order_id'],
+                'merchant_order_id'      => $o['merchant_order_id'] ?? null,
+                'purchase_date'          => $o['purchase_date'] ?? null,
+                'last_updated_date'      => $o['last_updated_date'] ?? null,
+                'order_status'           => $o['order_status'] ?? 'Unknown',
+                'items_status'           => 'pending',
+                'payment_method'         => $o['payment_method'] ?? null,
+                'payment_method_details_json' => $o['payment_method_details_json'] ?? null,
+                'buyer_info_json'        => $o['buyer_info_json'] ?? null,
+                'raw_order_json'         => $o['raw_order_json'] ?? null,
+                'is_business_order'      => (int) ($o['is_business_order'] ?? 0),
+                'is_iba'                 => (int) ($o['is_iba'] ?? 0),
+                'created_at'             => now(),
+                'updated_at'             => now(),
             ];
         }
 
-        DB::transaction(function () use ($rows, $sync) {
+        try {
+            DB::transaction(function () use ($rows, $sync) {
+                if (! empty($rows)) {
+                    DB::table('orders')->upsert(
+                        $rows,
+                        ['user_id', 'marketplace_id', 'amazon_order_id'],
+                        [
+                            'order_status',
+                            'last_updated_date',
+                            'raw_order_json',
+                            'updated_at',
+                        ]
+                    );
+                }
 
-            if (! empty($rows)) {
-                DB::table('orders')->upsert(
-                    $rows,
-                    ['user_id', 'marketplace_id', 'amazon_order_id'],
-                    [
-                        'order_status',
-                        'last_updated_date',
-                        'raw_order_json',
-                        'updated_at',
-                    ]
-                );
-            }
-
-            DB::table('orders_sync')
-                ->where('id', $sync->id)
-                ->update([
-                    'status'         => 'completed',
-                    'orders_fetched' => count($rows),
-                    'imported_count' => count($rows),
-                    'finished_at'    => now(),
-                    'updated_at'     => now(),
-                ]);
-        });
-
-        /////////////////////////////////////////////////////////////
+                DB::table('orders_sync')
+                    ->where('id', $sync->id)
+                    ->update([
+                        'status'         => 'completed',
+                        'orders_fetched' => count($rows),
+                        'imported_count' => count($rows),
+                        'finished_at'    => now(),
+                        'updated_at'     => now(),
+                    ]);
+            });
+        } catch (Throwable $e) {
+            $this->error('UPSERT ERROR: ' . $e->getMessage());
+            $this->retry($sync->id, $e->getMessage());
+        }
 
         return true;
     }
