@@ -41,7 +41,9 @@ class OrdersSyncWorker extends Command
 
             DB::listen(function ($query) {
                 $bindings = array_map(
-                    fn ($b) => is_string($b) ? "'{$b}'" : (is_null($b) ? 'NULL' : $b),
+                    fn ($b) => is_null($b)
+                        ? 'NULL'
+                        : (is_string($b) ? "'" . addslashes($b) . "'" : $b),
                     $query->bindings
                 );
 
@@ -79,16 +81,14 @@ class OrdersSyncWorker extends Command
 
     private function processOne(bool $debug): bool
     {
-        $now = now();
-
         DB::beginTransaction();
 
         try {
             $sync = DB::table('orders_sync')
                 ->whereIn('status', ['pending', 'fail'])
-                ->where(function ($q) use ($now) {
+                ->where(function ($q) {
                     $q->whereNull('run_after')
-                      ->orWhere('run_after', '<=', $now);
+                      ->orWhere('run_after', '<=', now());
                 })
                 ->orderBy('id')
                 ->lockForUpdate()
@@ -161,14 +161,14 @@ class OrdersSyncWorker extends Command
                 ]);
 
             DB::commit();
-
         } catch (Throwable $e) {
             DB::rollBack();
             $this->error('DB ERROR: ' . $e->getMessage());
             return false;
         }
 
-        // ---------- NODE ----------
+        // ---------------- NODE ----------------
+
         $cmd = [
             'node',
             'spapi/orders/RequestOrders.js',
@@ -220,44 +220,83 @@ class OrdersSyncWorker extends Command
             return true;
         }
 
-        // ---------- UPSERT ----------
-        $orders = $json['data']['orders'] ?? [];
+        // ---------------- UPSERT ----------------
+
         $rows = [];
 
-        foreach ($orders as $o) {
+        foreach ($json['data']['orders'] as $o) {
             $rows[] = [
-                'user_id'                => $sync->user_id,
-                'marketplace_id'         => $sync->marketplace_id,
-                'amazon_order_id'        => $o['amazon_order_id'],
-                'merchant_order_id'      => $o['merchant_order_id'] ?? null,
-                'purchase_date'          => $o['purchase_date'] ?? null,
-                'last_updated_date'      => $o['last_updated_date'] ?? null,
-                'order_status'           => $o['order_status'] ?? 'Unknown',
-                'items_status'           => 'pending',
-                'payment_method'         => $o['payment_method'] ?? null,
-                'payment_method_details_json' => $o['payment_method_details_json'] ?? null,
-                'buyer_info_json'        => $o['buyer_info_json'] ?? null,
-                'raw_order_json'         => $o['raw_order_json'] ?? null,
-                'is_business_order'      => (int) ($o['is_business_order'] ?? 0),
-                'is_iba'                 => (int) ($o['is_iba'] ?? 0),
-                'created_at'             => now(),
-                'updated_at'             => now(),
+                'user_id'                        => $sync->user_id,
+                'marketplace_id'                 => $sync->marketplace_id,
+                'amazon_order_id'                => $o['amazon_order_id'],
+
+                'merchant_order_id'              => $o['merchant_order_id'],
+                'purchase_date'                  => $o['purchase_date'],
+                'last_updated_date'              => $o['last_updated_date'],
+                'order_status'                   => $o['order_status'],
+                'items_status'                   => 'pending',
+
+                'order_type'                     => $o['order_type'],
+                'fulfillment_channel'            => $o['fulfillment_channel'],
+                'sales_channel'                  => $o['sales_channel'],
+                'order_channel'                  => $o['order_channel'],
+
+                'ship_service_level'             => $o['ship_service_level'],
+                'shipment_service_level_category'=> $o['shipment_service_level_category'],
+
+                'ship_city'                      => $o['ship_city'],
+                'ship_state'                     => $o['ship_state'],
+                'ship_postal_code'               => $o['ship_postal_code'],
+                'ship_country'                   => $o['ship_country'],
+
+                'payment_method'                 => $o['payment_method'],
+                'payment_method_details_json'    => $o['payment_method_details_json'],
+                'buyer_info_json'                => $o['buyer_info_json'],
+                'buyer_invoice_preference'       => $o['buyer_invoice_preference'],
+
+                'purchase_order_number'          => $o['purchase_order_number'],
+                'price_designation'              => $o['price_designation'],
+
+                'order_total_amount'             => $o['order_total_amount'],
+                'order_total_currency'           => $o['order_total_currency'],
+                'number_of_items_shipped'        => $o['number_of_items_shipped'],
+                'number_of_items_unshipped'      => $o['number_of_items_unshipped'],
+
+                'earliest_ship_date'             => $o['earliest_ship_date'],
+                'latest_ship_date'               => $o['latest_ship_date'],
+                'earliest_delivery_date'         => $o['earliest_delivery_date'],
+                'latest_delivery_date'           => $o['latest_delivery_date'],
+
+                'is_business_order'              => (int) $o['is_business_order'],
+                'is_prime'                       => (int) $o['is_prime'],
+                'is_premium_order'               => (int) $o['is_premium_order'],
+                'is_replacement_order'           => (int) $o['is_replacement_order'],
+                'is_sold_by_ab'                  => (int) $o['is_sold_by_ab'],
+                'is_ispu'                        => (int) $o['is_ispu'],
+                'is_global_express_enabled'      => (int) $o['is_global_express_enabled'],
+                'is_access_point_order'          => (int) $o['is_access_point_order'],
+                'has_regulated_items'            => (int) $o['has_regulated_items'],
+                'is_iba'                         => (int) $o['is_iba'],
+
+                'raw_order_json'                 => $o['raw_order_json'],
+
+                'created_at'                     => now(),
+                'updated_at'                     => now(),
             ];
         }
 
         try {
             DB::transaction(function () use ($rows, $sync) {
-                if (! empty($rows)) {
+                if ($rows) {
                     DB::table('orders')->upsert(
                         $rows,
                         ['user_id', 'marketplace_id', 'amazon_order_id'],
-                        [
-                            'purchase_date',
-                            'order_status',
-                            'last_updated_date',
-                            'raw_order_json',
-                            'updated_at',
-                        ]
+                        array_diff(array_keys($rows[0]), [
+                            'user_id',
+                            'marketplace_id',
+                            'amazon_order_id',
+                            'created_at',
+                        ])
                     );
                 }
 
