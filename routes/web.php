@@ -1,6 +1,7 @@
 <?php
 
     use Illuminate\Support\Facades\Route;
+    use Illuminate\Http\Request;
 
     Route::get('/', function () {
         return view('welcome');
@@ -19,3 +20,16 @@
         return redirect()->back();
     })->name('marketplace.switch');
 
+    Route::get('/marketplace/switch/{id}', function (int $id) {
+        session(['active_marketplace' => $id]);
+
+        return redirect()->back();
+    })->name('marketplace.switch.sidebar');
+    
+    Route::post('/marketplace/switch', function (Request $request) {
+    session([
+        'active_marketplace' => (int) $request->marketplace_id,
+    ]);
+
+    return redirect()->back();
+})->name('marketplace.switch.post');

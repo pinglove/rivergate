@@ -81,6 +81,11 @@ class AdminPanelProvider extends PanelProvider
                 fn () => view('filament.hooks.lang-switcher')
             )
 
+            ->renderHook(
+                PanelsRenderHook::SIDEBAR_NAV_START,
+                fn () => view('filament.hooks.marketplace-switcher-sidebar')
+            )
+
             ->userMenuItems([
                 UserMenuItem::make()
                     ->label('Active marketplaces')
