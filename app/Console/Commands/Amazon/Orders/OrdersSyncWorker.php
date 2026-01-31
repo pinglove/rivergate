@@ -252,6 +252,7 @@ class OrdersSyncWorker extends Command
                         $rows,
                         ['user_id', 'marketplace_id', 'amazon_order_id'],
                         [
+                            'purchase_date',
                             'order_status',
                             'last_updated_date',
                             'raw_order_json',
