@@ -9,3 +9,18 @@
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
+
+/* Filament bulk selection indicator — layout only */
+.fi-ta-selection-indicator {
+    width: 100%;
+}
+
+/* LEFT block — оставляем как есть */
+.fi-ta-selection-indicator > div:first-child {
+    flex: 0 0 auto;
+}
+
+/* RIGHT block — уезжает вправо */
+.fi-ta-selection-indicator > div:last-child {
+    margin-left: auto;
+}

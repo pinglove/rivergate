@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Amazon\Asins;
 use App\Models\Amazon\Asins\Asin;
 use App\Models\Amazon\Review\ReviewRequestSetting;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Placeholder;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
@@ -14,10 +15,7 @@ use Filament\Tables\Columns\ToggleColumn;
 use Filament\Tables\Actions\BulkAction;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
-
 use App\Filament\Resources\Amazon\Asins\AsinResource\Pages;
-
-// 🔐 Shield
 use BezhanSalleh\FilamentShield\Contracts\HasShieldPermissions;
 
 class AsinResource extends Resource implements HasShieldPermissions
@@ -30,7 +28,7 @@ class AsinResource extends Resource implements HasShieldPermissions
     protected static ?int $navigationSort = 25;
 
     /**
-     * Глобальный query ресурса — всегда user + marketplace
+     * Always scope by user + active marketplace
      */
     public static function getEloquentQuery(): Builder
     {
@@ -42,9 +40,13 @@ class AsinResource extends Resource implements HasShieldPermissions
     public static function table(Table $table): Table
     {
         return $table
+            ->defaultPaginationPageOption(50)
+            ->paginationPageOptions([25, 50, 100])
+
             ->columns([
                 ToggleColumn::make('review_enabled')
                     ->label('Review')
+                    ->tooltip('Enable / disable Amazon review requests for this ASIN')
                     ->getStateUsing(fn (Asin $record) =>
                         ReviewRequestSetting::query()
                             ->where('user_id', auth()->id())
@@ -60,9 +62,8 @@ class AsinResource extends Resource implements HasShieldPermissions
                                 'asin_id'        => $record->id,
                             ],
                             [
-                                'is_enabled'   => $state,
-                                'delay_days'   => 7,
-                                'process_hour' => 2,
+                                'is_enabled' => $state,
+                                'delay_days' => 5, // Amazon safe default
                             ]
                         );
                     }),
@@ -102,100 +103,58 @@ class AsinResource extends Resource implements HasShieldPermissions
                     ->searchable(),
             ])
 
-            /* ================= FILTERS ================= */
-
             ->filters([
-                // Review ON / OFF
-                Tables\Filters\TernaryFilter::make('review_enabled_filter')
+                Tables\Filters\TernaryFilter::make('review_enabled')
                     ->label('Review enabled')
                     ->queries(
                         true: fn (Builder $q) =>
-                            $q->whereExists(function ($sub) {
+                            $q->whereExists(fn ($sub) =>
                                 $sub->selectRaw(1)
                                     ->from('review_request_settings')
                                     ->whereColumn('review_request_settings.asin_id', 'asins.id')
-                                    ->where('review_request_settings.user_id', auth()->id())
-                                    ->where('review_request_settings.marketplace_id', session('active_marketplace'))
-                                    ->where('review_request_settings.is_enabled', true);
-                            }),
-
+                                    ->where('user_id', auth()->id())
+                                    ->where('marketplace_id', session('active_marketplace'))
+                                    ->where('is_enabled', true)
+                            ),
                         false: fn (Builder $q) =>
-                            $q->whereExists(function ($sub) {
+                            $q->whereExists(fn ($sub) =>
                                 $sub->selectRaw(1)
                                     ->from('review_request_settings')
                                     ->whereColumn('review_request_settings.asin_id', 'asins.id')
-                                    ->where('review_request_settings.user_id', auth()->id())
-                                    ->where('review_request_settings.marketplace_id', session('active_marketplace'))
-                                    ->where('review_request_settings.is_enabled', false);
-                            }),
-
-                        blank: fn (Builder $q) => $q
+                                    ->where('user_id', auth()->id())
+                                    ->where('marketplace_id', session('active_marketplace'))
+                                    ->where('is_enabled', false)
+                            ),
                     ),
 
-                // Review delay
-                Tables\Filters\SelectFilter::make('review_delay_filter')
+                Tables\Filters\SelectFilter::make('review_delay')
                     ->label('Review delay')
                     ->options([
-                        3  => '3 days',
                         5  => '5 days',
                         7  => '7 days',
                         14 => '14 days',
                         21 => '21 days',
-                        30 => '30 days',
+                        25 => '25 days',
                     ])
-                    ->query(function (Builder $q, array $data) {
-
-                        if (! isset($data['value'])) {
-                            return;
-                        }
-
-                        $delay = (int) $data['value'];
-
-                        $q->whereExists(function ($sub) use ($delay) {
-                            $sub->selectRaw(1)
-                                ->from('review_request_settings')
-                                ->whereColumn('review_request_settings.asin_id', 'asins.id')
-                                ->where('review_request_settings.user_id', auth()->id())
-                                ->where('review_request_settings.marketplace_id', session('active_marketplace'))
-                                ->where('review_request_settings.delay_days', $delay);
-                        });
-                    }),
-
-
-                // Has / no review settings
-                Tables\Filters\TernaryFilter::make('has_review_settings')
-                    ->label('Has review settings')
-                    ->queries(
-                        true: fn (Builder $q) =>
-                            $q->whereExists(function ($sub) {
+                    ->query(fn (Builder $q, array $data) =>
+                        isset($data['value'])
+                            ? $q->whereExists(fn ($sub) =>
                                 $sub->selectRaw(1)
                                     ->from('review_request_settings')
                                     ->whereColumn('review_request_settings.asin_id', 'asins.id')
-                                    ->where('review_request_settings.user_id', auth()->id())
-                                    ->where('review_request_settings.marketplace_id', session('active_marketplace'));
-                            }),
-
-                        false: fn (Builder $q) =>
-                            $q->whereNotExists(function ($sub) {
-                                $sub->selectRaw(1)
-                                    ->from('review_request_settings')
-                                    ->whereColumn('review_request_settings.asin_id', 'asins.id')
-                                    ->where('review_request_settings.user_id', auth()->id())
-                                    ->where('review_request_settings.marketplace_id', session('active_marketplace'));
-                            }),
-
-                        blank: fn (Builder $q) => $q
+                                    ->where('user_id', auth()->id())
+                                    ->where('marketplace_id', session('active_marketplace'))
+                                    ->where('delay_days', (int) $data['value'])
+                            )
+                            : null
                     ),
             ])
 
-            ->defaultSort('asin')
-            ->actions([])
-
-            /* ================= BULK ACTIONS ================= */
-
             ->bulkActions([
                 BulkAction::make('enableReview')
-                    ->label('Enable review')
+                    ->label('Enable review (selected ASINs)')
+                    ->requiresConfirmation()
+                    ->modalDescription('⚠️ Review requests are sent via Amazon API and cannot be undone.')
                     ->action(fn (Collection $records) =>
                         $records->each(fn (Asin $asin) =>
                             ReviewRequestSetting::updateOrCreate(
@@ -212,37 +171,23 @@ class AsinResource extends Resource implements HasShieldPermissions
                         )
                     ),
 
-                BulkAction::make('disableReview')
-                    ->label('Disable review')
-                    ->action(fn (Collection $records) =>
-                        $records->each(fn (Asin $asin) =>
-                            ReviewRequestSetting::updateOrCreate(
-                                [
-                                    'user_id'        => auth()->id(),
-                                    'marketplace_id' => (int) session('active_marketplace'),
-                                    'asin_id'        => $asin->id,
-                                ],
-                                [
-                                    'is_enabled' => false,
-                                ]
-                            )
-                        )
-                    ),
-
                 BulkAction::make('setDelay')
-                    ->label('Set delay')
+                    ->label('Set delay (selected ASINs)')
                     ->form([
                         Select::make('delay_days')
                             ->label('Delay days')
                             ->options([
-                                3  => '3 days',
                                 5  => '5 days',
                                 7  => '7 days',
                                 14 => '14 days',
                                 21 => '21 days',
-                                30 => '30 days',
+                                25 => '25 days',
                             ])
+                            ->default(7) 
                             ->required(),
+
+                        Placeholder::make('warning')
+                            ->content('⚠️ Applies only to selected ASINs on the current page.'),
                     ])
                     ->action(function (Collection $records, array $data) {
                         foreach ($records as $asin) {
@@ -273,13 +218,8 @@ class AsinResource extends Resource implements HasShieldPermissions
         return false;
     }
 
-    /**
-     * 🔐 Убираем зоопарк прав — только просмотр
-     */
     public static function getPermissionPrefixes(): array
     {
-        return [
-            'view_any',
-        ];
+        return ['view_any'];
     }
 }
