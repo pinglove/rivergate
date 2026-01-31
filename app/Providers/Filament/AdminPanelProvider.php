@@ -2,12 +2,10 @@
 
 namespace App\Providers\Filament;
 
-use App\Filament\Pages\Settings\Marketplaces;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
-use Filament\Navigation\UserMenuItem;
 use Filament\Pages;
 use Filament\Panel;
 use Filament\PanelProvider;
@@ -19,8 +17,12 @@ use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
 use Filament\View\PanelsRenderHook;
+
+use Filament\Navigation\UserMenuItem;
+use App\Filament\Pages\Settings\Marketplaces;
 
 class AdminPanelProvider extends PanelProvider
 {
@@ -33,17 +35,14 @@ class AdminPanelProvider extends PanelProvider
             ->login()
             ->profile()
 
-            // 🔌 Plugins
             ->plugins([
                 FilamentShieldPlugin::make(),
             ])
 
-            // 🎨 Colors
             ->colors([
                 'primary' => Color::Amber,
             ])
 
-            // 📂 Navigation groups
             ->navigationGroups([
                 'Amazon',
                 'Logs',
@@ -52,7 +51,6 @@ class AdminPanelProvider extends PanelProvider
                 'Filament Shield',
             ])
 
-            // 📑 Resources / Pages / Widgets
             ->discoverResources(
                 in: app_path('Filament/Resources'),
                 for: 'App\\Filament\\Resources'
@@ -73,44 +71,23 @@ class AdminPanelProvider extends PanelProvider
                 Widgets\FilamentInfoWidget::class,
             ])
 
-            /**
-             * 🔹 ПУНКТЫ МЕНЮ (идут ПОСЛЕ переключения темы)
-             */
+            // ✅ ВСТАВЛЯЕМ ДВА DROPDOWN В USER MENU (как в примере Glow)
+            ->renderHook(
+                PanelsRenderHook::USER_MENU_PROFILE_AFTER,
+                fn () => view('filament.hooks.marketplace-switcher')
+            )
+            ->renderHook(
+                PanelsRenderHook::USER_MENU_PROFILE_AFTER,
+                fn () => view('filament.hooks.lang-switcher')
+            )
+
             ->userMenuItems([
                 UserMenuItem::make()
-                    ->label(fn () => 'Marketplaces (' . session('active_marketplace_code', '—') . ')')
-                    ->icon('heroicon-o-globe-alt')
-                    ->url(fn () => Marketplaces::getUrl()),
-
-                UserMenuItem::make()
-                    ->label(fn () => 'Language (' . strtoupper(app()->getLocale()) . ')')
-                    ->icon('heroicon-o-language')
-                    ->url('#'),
-
-                // ❗ НЕ ТРОГАЕМ
-                UserMenuItem::make()
                     ->label('Active marketplaces')
-                    ->icon('heroicon-o-briefcase')
+                    ->icon('heroicon-o-rectangle-stack')
                     ->url(fn () => Marketplaces::getUrl()),
             ])
 
-            /**
-             * 🔽 DROPDOWN’Ы
-             * Marketplace + Language
-             * СРАЗУ ПОСЛЕ Profile (до theme switcher)
-             */
-            ->renderHook(
-                PanelsRenderHook::USER_MENU_PROFILE_AFTER,
-                fn () => view('filament.hooks.marketplace-switcher'),
-                10
-            )
-            ->renderHook(
-                PanelsRenderHook::USER_MENU_PROFILE_AFTER,
-                fn () => view('filament.hooks.lang-switcher'),
-                20
-            )
-
-            // 🧠 Middleware
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
@@ -127,7 +104,6 @@ class AdminPanelProvider extends PanelProvider
                 DispatchServingFilamentEvent::class,
             ])
 
-            // 🔐 Auth
             ->authMiddleware([
                 Authenticate::class,
             ]);

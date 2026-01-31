@@ -11,7 +11,7 @@ class OrdersSyncWorker extends Command
 {
     protected $signature = 'amazon:orders:worker
         {--sleep=5 : Idle sleep seconds}
-        {--limit=0 : Max jobs (debug only)}
+        {--limit=100 : Max jobs (debug only)}
         {--once : Process single job and exit (debug only)}
         {--debug}';
 
@@ -36,7 +36,7 @@ class OrdersSyncWorker extends Command
         pcntl_signal(SIGINT, fn () => $this->shouldStop = true);
 
         if ($debug) {
-            $this->info('=== AMAZON ORDERS SYNC WORKER (PROD SAFE) ===');
+            $this->info('=== AMAZON ORDERS SYNC WORKER (DEBUG MODE) ===');
         }
 
         while (! $this->shouldStop) {
@@ -85,7 +85,6 @@ class OrdersSyncWorker extends Command
                 return false;
             }
 
-            // ⛔ HARD STOP: max attempts
             if ($sync->attempts >= self::MAX_ATTEMPTS) {
                 DB::table('orders_sync')
                     ->where('id', $sync->id)
@@ -138,7 +137,6 @@ class OrdersSyncWorker extends Command
                 return false;
             }
 
-            // 🔒 CLAIM TASK
             DB::table('orders_sync')
                 ->where('id', $sync->id)
                 ->update([
@@ -173,13 +171,22 @@ class OrdersSyncWorker extends Command
             '--sp_api_region=' . $token->sp_api_region,
         ];
 
+        // 🔎 DEBUG: реальная shell-команда
+        $cmdString = implode(' ', array_map('escapeshellarg', $cmd));
+
         if ($debug) {
-            $this->line("NODE orders_sync_id={$sync->id}");
+            $this->line('');
+            $this->line("NODE CMD (orders_sync_id={$sync->id}):");
+            $this->line($cmdString);
+            $this->line('');
         }
 
         $process = proc_open(
-            implode(' ', array_map('escapeshellarg', $cmd)),
-            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $cmdString,
+            [
+                1 => ['pipe', 'w'], // stdout
+                2 => ['pipe', 'w'], // stderr
+            ],
             $pipes,
             base_path()
         );
@@ -188,9 +195,13 @@ class OrdersSyncWorker extends Command
         $stderr = stream_get_contents($pipes[2]);
         proc_close($process);
 
+        if ($debug && trim($stderr) !== '') {
+            $this->error("NODE STDERR:");
+            $this->line($stderr);
+        }
+
         $json = $this->extractLastJson($stdout);
 
-        // ❌ Node did not return JSON
         if (! $json) {
             $this->retry($sync->id, 'Node returned no JSON');
             return true;
@@ -205,7 +216,6 @@ class OrdersSyncWorker extends Command
             return true;
         }
 
-        // ✅ SUCCESS
         $orders = $json['data']['orders'] ?? [];
         $imported = 0;
 
