@@ -72,7 +72,7 @@ class AsinUserMpSyncResource extends Resource implements HasShieldPermissions
 
             ->filters([
                 /**
-                 * Created at period (как в эталоне)
+                 * Created at period
                  */
                 Tables\Filters\Filter::make('created_period')
                     ->label('Created date')
@@ -101,7 +101,7 @@ class AsinUserMpSyncResource extends Resource implements HasShieldPermissions
                     }),
 
                 /**
-                 * Status (как в эталоне)
+                 * Status
                  */
                 Tables\Filters\Filter::make('status')
                     ->label('Status')
@@ -125,39 +125,14 @@ class AsinUserMpSyncResource extends Resource implements HasShieldPermissions
                     }),
             ])
 
+            // ❌ НЕТ actions
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data) {
-
-                        $q = AsinUserMpSync::query();
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where('created_at', '<', now()->subDays(3));
-                        }
-
-                        $q->delete();
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions — значит:
+            //   - нет чекбоксов
+            //   - нет массовых действий
+            //   - нет кнопки Clear
+            ;
     }
 
     public static function getPages(): array

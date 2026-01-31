@@ -154,8 +154,10 @@ async function main() {
           ? { NextToken: nextToken }
           : {
               MarketplaceIds: [marketplaceId],
-              LastUpdatedAfter: fromIso,
-              ...(toIso ? { LastUpdatedBefore: toIso } : {}),
+              //LastUpdatedAfter: fromIso,
+              CreatedAfter: fromIso,
+              //...(toIso ? { LastUpdatedBefore: toIso } : {}),
+              ...(toIso ? { CreatedBefore: toIso } : {}),
               OrderStatuses: [
                 'Pending',
                 'Unshipped',

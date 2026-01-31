@@ -10,7 +10,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class AsinListingSyncRequestPayloadResource extends Resource implements HasShieldPermissions
@@ -127,57 +126,11 @@ class AsinListingSyncRequestPayloadResource extends Resource implements HasShiel
                     }),
             ])
 
+            // ❌ нет row actions
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-
-                        $q = AsinListingSyncRequestPayload::query()
-                            ->join(
-                                'asins_asin_listing_sync',
-                                'asins_asin_listing_sync.id',
-                                '=',
-                                'asins_asin_listing_sync_request_payloads.request_id'
-                            );
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where(
-                                'asins_asin_listing_sync_request_payloads.created_at',
-                                '<',
-                                now()->subDays(3)
-                            );
-                        }
-
-                        $ids = (clone $q)
-                            ->select('asins_asin_listing_sync_request_payloads.id')
-                            ->pluck('id');
-
-                        if ($ids->isNotEmpty()) {
-                            DB::table('asins_asin_listing_sync_request_payloads')
-                                ->whereIn('id', $ids)
-                                ->delete();
-                        }
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions — нет чекбоксов и Clear
+            ;
     }
 
     public static function getPages(): array

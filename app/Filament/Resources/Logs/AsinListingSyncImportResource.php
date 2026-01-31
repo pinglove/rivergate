@@ -10,7 +10,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class AsinListingSyncImportResource extends Resource implements HasShieldPermissions
@@ -68,18 +67,16 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
-                    ->color(function (string $state) {
-                        return match ($state) {
-                            'pending'     => 'gray',
-                            'processing'  => 'warning',
-                            'completed'   => 'success',
-                            'resolved'    => 'success',
-                            'success'     => 'success',
-                            'failed'      => 'danger',
-                            'error'       => 'danger',
-                            'skipped'     => 'secondary',
-                            default       => 'secondary',
-                        };
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'resolved'    => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
                     }),
 
                 Tables\Columns\TextColumn::make('created_at')
@@ -149,55 +146,8 @@ class AsinListingSyncImportResource extends Resource implements HasShieldPermiss
 
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-
-                        $q = AsinListingSyncImport::query()
-                            ->join(
-                                'asins_asin_listing_sync',
-                                'asins_asin_listing_sync.id',
-                                '=',
-                                'asins_asin_listing_sync_imports.sync_id'
-                            );
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where(
-                                'asins_asin_listing_sync_imports.created_at',
-                                '<',
-                                now()->subDays(3)
-                            );
-                        }
-
-                        $ids = (clone $q)
-                            ->select('asins_asin_listing_sync_imports.id')
-                            ->pluck('id');
-
-                        if ($ids->isNotEmpty()) {
-                            DB::table('asins_asin_listing_sync_imports')
-                                ->whereIn('id', $ids)
-                                ->delete();
-                        }
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions — нет чекбоксов и Clear
+            ;
     }
 
     public static function getPages(): array

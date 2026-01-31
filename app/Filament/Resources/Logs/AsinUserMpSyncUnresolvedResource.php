@@ -72,7 +72,7 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
                         'pending'     => 'gray',
                         'processing'  => 'warning',
                         'completed'   => 'success',
-                        'resolved'    => 'success', // ✅ ВАЖНО
+                        'resolved'    => 'success',
                         'success'     => 'success',
                         'failed'      => 'danger',
                         'error'       => 'danger',
@@ -161,37 +161,11 @@ class AsinUserMpSyncUnresolvedResource extends Resource implements HasShieldPerm
                     }),
             ])
 
+            // ❌ НЕТ row actions
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-                        $q = AsinUserMpSyncUnresolved::query();
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where('created_at', '<', now()->subDays(3));
-                        }
-
-                        $q->delete();
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions
+            ;
     }
 
     public static function getPages(): array

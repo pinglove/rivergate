@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "82093745d47c0ab6dcc9c8e814d4f02f",
+    "content-hash": "96bd52a364e3018876ea4b4c56869865",
     "packages": [
         {
             "name": "anourvalar/eloquent-serialize",
@@ -2045,68 +2045,6 @@
                 }
             ],
             "time": "2025-08-22T14:27:06+00:00"
-        },
-        {
-            "name": "jeffersongoncalves/filament-topbar",
-            "version": "1.0.1",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/jeffersongoncalves/filament-topbar.git",
-                "reference": "367b530a6d455f53687ff6c536c746b1e22d8588"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/jeffersongoncalves/filament-topbar/zipball/367b530a6d455f53687ff6c536c746b1e22d8588",
-                "reference": "367b530a6d455f53687ff6c536c746b1e22d8588",
-                "shasum": ""
-            },
-            "require": {
-                "filament/filament": "^3.0",
-                "php": "^8.2|^8.3",
-                "spatie/laravel-package-tools": "^1.14.0"
-            },
-            "require-dev": {
-                "larastan/larastan": "^3.0",
-                "laravel/pint": "^1.21",
-                "orchestra/testbench": "^9.0|^10.0"
-            },
-            "type": "library",
-            "extra": {
-                "laravel": {
-                    "providers": [
-                        "JeffersonGoncalves\\Filament\\Topbar\\TopbarServiceProvider"
-                    ]
-                }
-            },
-            "autoload": {
-                "psr-4": {
-                    "JeffersonGoncalves\\Filament\\Topbar\\": "src"
-                }
-            },
-            "notification-url": "https://packagist.org/downloads/",
-            "license": [
-                "MIT"
-            ],
-            "authors": [
-                {
-                    "name": "Jefferson Gonçalves",
-                    "email": "gerson.simao.92@gmail.com",
-                    "role": "Developer"
-                }
-            ],
-            "description": "A simple yet effective Filament plugin that automatically adds a customized topbar to your Filament admin panel. This plugin enhances your Filament panel's user experience by replacing the default topbar component with an improved version that displays navigation and user interface elements in strategic locations.",
-            "homepage": "https://github.com/jeffersongoncalves/filament-topbar",
-            "keywords": [
-                "filament",
-                "filament-topbar",
-                "jeffersongoncalves",
-                "laravel"
-            ],
-            "support": {
-                "issues": "https://github.com/jeffersongoncalves/filament-topbar/issues",
-                "source": "https://github.com/jeffersongoncalves/filament-topbar/tree/1.0.1"
-            },
-            "time": "2025-08-02T01:22:31+00:00"
         },
         {
             "name": "kirschbaum-development/eloquent-power-joins",

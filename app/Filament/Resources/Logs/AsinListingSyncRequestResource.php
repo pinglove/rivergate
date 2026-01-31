@@ -10,7 +10,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class AsinListingSyncRequestResource extends Resource implements HasShieldPermissions
@@ -63,18 +62,16 @@ class AsinListingSyncRequestResource extends Resource implements HasShieldPermis
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
-                    ->color(function (string $state) {
-                        return match ($state) {
-                            'pending'     => 'gray',
-                            'processing'  => 'warning',
-                            'completed'   => 'success',
-                            'resolved'    => 'success', // ✅
-                            'success'     => 'success',
-                            'failed'      => 'danger',
-                            'error'       => 'danger',
-                            'skipped'     => 'secondary',
-                            default       => 'secondary',
-                        };
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'resolved'    => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
                     }),
 
                 Tables\Columns\TextColumn::make('attempts')->sortable(),
@@ -168,57 +165,11 @@ class AsinListingSyncRequestResource extends Resource implements HasShieldPermis
                     }),
             ])
 
+            // ❌ нет row actions
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-
-                        $q = AsinListingSyncRequest::query()
-                            ->join(
-                                'asins_asin_listing_sync',
-                                'asins_asin_listing_sync.id',
-                                '=',
-                                'asins_asin_listing_sync_requests.sync_id'
-                            );
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('asins_asin_listing_sync.marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where(
-                                'asins_asin_listing_sync_requests.created_at',
-                                '<',
-                                now()->subDays(3)
-                            );
-                        }
-
-                        $ids = (clone $q)
-                            ->select('asins_asin_listing_sync_requests.id')
-                            ->pluck('id');
-
-                        if ($ids->isNotEmpty()) {
-                            DB::table('asins_asin_listing_sync_requests')
-                                ->whereIn('id', $ids)
-                                ->delete();
-                        }
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions — нет чекбоксов и Clear
+            ;
     }
 
     public static function getPages(): array

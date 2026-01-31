@@ -59,17 +59,15 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
-                    ->color(function (string $state) {
-                        return match ($state) {
-                            'pending'     => 'gray',
-                            'processing'  => 'warning',
-                            'completed'   => 'success',
-                            'success'     => 'success',
-                            'failed'      => 'danger',
-                            'error'       => 'danger',
-                            'skipped'     => 'secondary',
-                            default       => 'secondary',
-                        };
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
                     }),
 
                 Tables\Columns\TextColumn::make('attempts')
@@ -162,6 +160,8 @@ class OrdersItemsSyncResource extends Resource implements HasShieldPermissions
                     }),
             ])
 
+            // ❌ нет row actions
+            // ❌ нет bulk actions
             ->actions([]);
     }
 

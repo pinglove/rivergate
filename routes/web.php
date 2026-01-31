@@ -1,17 +1,21 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
+    use Illuminate\Support\Facades\Route;
 
-Route::get('/', function () {
-    return view('welcome');
-});
+    Route::get('/', function () {
+        return view('welcome');
+    });
 
-use App\Http\Controllers\LocaleSwitchController;
+    //use App\Http\Controllers\LocaleSwitchController;
 
-Route::get('/locale/{locale}', LocaleSwitchController::class)
-    ->name('locale.switch');
+    Route::get('/locale/{locale}', function (string $locale) {
+        abort_unless(in_array($locale, ['en', 'fr', 'de'], true), 404);
+        session(['locale' => $locale]);
+        return redirect()->back();
+    })->name('locale.switch');
 
-use App\Http\Controllers\MarketplaceSwitchController;
+    Route::get('/marketplace/{marketplace}', function (int $marketplace) {
+        session(['active_marketplace' => $marketplace]);
+        return redirect()->back();
+    })->name('marketplace.switch');
 
-Route::get('/marketplace/{marketplace}', MarketplaceSwitchController::class)
-    ->name('marketplace.switch');

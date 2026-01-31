@@ -61,35 +61,31 @@ class AsinListingSyncResource extends Resource implements HasShieldPermissions
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
-                    ->color(function (string $state) {
-                        return match ($state) {
-                            'pending'     => 'gray',
-                            'processing'  => 'warning',
-                            'completed'   => 'success',
-                            'resolved'    => 'success',
-                            'success'     => 'success',
-                            'failed'      => 'danger',
-                            'error'       => 'danger',
-                            'skipped'     => 'secondary',
-                            default       => 'secondary',
-                        };
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'resolved'    => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
                     }),
 
                 Tables\Columns\TextColumn::make('pipeline')
                     ->sortable()
                     ->badge()
-                    ->color(function (string $state) {
-                        return match ($state) {
-                            'pending'     => 'gray',
-                            'processing'  => 'warning',
-                            'completed'   => 'success',
-                            'resolved'    => 'success',
-                            'success'     => 'success',
-                            'failed'      => 'danger',
-                            'error'       => 'danger',
-                            'skipped'     => 'secondary',
-                            default       => 'secondary',
-                        };
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'resolved'    => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
                     }),
 
                 Tables\Columns\TextColumn::make('run_after')
@@ -179,39 +175,11 @@ class AsinListingSyncResource extends Resource implements HasShieldPermissions
                     }),
             ])
 
+            // ❌ нет row actions
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-
-                        $q = AsinListingSync::query();
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where('created_at', '<', now()->subDays(3));
-                        }
-
-                        $q->delete();
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions — нет чекбоксов и Clear
+            ;
     }
 
     public static function getPages(): array

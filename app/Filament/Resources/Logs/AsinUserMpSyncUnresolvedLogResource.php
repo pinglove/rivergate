@@ -10,7 +10,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Forms;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class AsinUserMpSyncUnresolvedLogResource extends Resource implements HasShieldPermissions
@@ -73,7 +72,7 @@ class AsinUserMpSyncUnresolvedLogResource extends Resource implements HasShieldP
                         'pending'     => 'gray',
                         'processing'  => 'warning',
                         'completed'   => 'success',
-                        'resolved'    => 'success', // ✅ ДОБАВЛЕНО
+                        'resolved'    => 'success',
                         'success'     => 'success',
                         'failed'      => 'danger',
                         'error'       => 'danger',
@@ -156,60 +155,11 @@ class AsinUserMpSyncUnresolvedLogResource extends Resource implements HasShieldP
                     }),
             ])
 
+            // ❌ НЕТ actions
             ->actions([])
 
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-
-                        $q = AsinUserMpSyncUnresolvedLog::query()
-                            ->join(
-                                'asins_user_mp_sync_unresolved',
-                                'asins_user_mp_sync_unresolved.id',
-                                '=',
-                                'asins_user_mp_sync_unresolved_logs.unresolved_id'
-                            );
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where(
-                                'asins_user_mp_sync_unresolved.marketplace_id',
-                                (int) $mp
-                            );
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where(
-                                'asins_user_mp_sync_unresolved_logs.created_at',
-                                '<',
-                                now()->subDays(3)
-                            );
-                        }
-
-                        $ids = (clone $q)
-                            ->select('asins_user_mp_sync_unresolved_logs.id')
-                            ->pluck('id');
-
-                        if ($ids->isNotEmpty()) {
-                            DB::table('asins_user_mp_sync_unresolved_logs')
-                                ->whereIn('id', $ids)
-                                ->delete();
-                        }
-                    }),
-            ]);
+            // ❌ НЕТ bulkActions
+            ;
     }
 
     public static function getPages(): array

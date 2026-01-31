@@ -66,17 +66,15 @@ class ReviewRequestQueueResource extends Resource implements HasShieldPermission
                 Tables\Columns\TextColumn::make('status')
                     ->sortable()
                     ->badge()
-                    ->color(function (string $state) {
-                        return match ($state) {
-                            'pending'     => 'gray',
-                            'processing'  => 'warning',
-                            'completed'   => 'success',
-                            'success'     => 'success',
-                            'failed'      => 'danger',
-                            'error'       => 'danger',
-                            'skipped'     => 'secondary',
-                            default       => 'secondary',
-                        };
+                    ->color(fn (string $state) => match ($state) {
+                        'pending'     => 'gray',
+                        'processing'  => 'warning',
+                        'completed'   => 'success',
+                        'success'     => 'success',
+                        'failed'      => 'danger',
+                        'error'       => 'danger',
+                        'skipped'     => 'secondary',
+                        default       => 'secondary',
                     }),
 
                 Tables\Columns\TextColumn::make('attempts')
@@ -172,39 +170,9 @@ class ReviewRequestQueueResource extends Resource implements HasShieldPermission
                     }),
             ])
 
-            ->actions([])
-
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('clear')
-                    ->label('Clear')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->form([
-                        Forms\Components\Select::make('period')
-                            ->label('Период')
-                            ->options([
-                                'all' => 'Все',
-                                '3d'  => 'Старше 3 дней',
-                            ])
-                            ->default('3d')
-                            ->required(),
-                    ])
-                    ->action(function (array $data): void {
-
-                        $q = ReviewRequestQueue::query();
-
-                        if ($mp = session('active_marketplace')) {
-                            $q->where('marketplace_id', (int) $mp);
-                        }
-
-                        if (($data['period'] ?? '3d') === '3d') {
-                            $q->where('created_at', '<', now()->subDays(3));
-                        }
-
-                        $q->delete();
-                    }),
-            ]);
+            // ❌ никаких bulk actions
+            // ❌ никаких row actions
+            ->actions([]);
     }
 
     public static function getPages(): array
