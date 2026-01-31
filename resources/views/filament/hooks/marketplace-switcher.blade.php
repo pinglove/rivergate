@@ -28,7 +28,7 @@
     <x-slot name="trigger">
         <div class="px-3 py-2 text-sm flex items-center gap-2">
             <x-filament::icon icon="heroicon-o-globe-alt" class="w-5 h-5" />
-            <span>Marketplaces</span>
+            <span>Marketplaces ({{ $activeMarketplace->code ?? '—' }})</span>
         </div>
     </x-slot>
 
