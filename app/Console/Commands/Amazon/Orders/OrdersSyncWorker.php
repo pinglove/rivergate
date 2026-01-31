@@ -215,38 +215,75 @@ class OrdersSyncWorker extends Command
             );
             return true;
         }
-
+        /////////////////////////////////////////////////////////
+        // ✅ SUCCESS
         $orders = $json['data']['orders'] ?? [];
-        $imported = 0;
 
-        DB::transaction(function () use ($orders, $sync, &$imported) {
-            foreach ($orders as $order) {
-                DB::table('orders')->updateOrInsert(
+        $rows = [];
+
+        foreach ($orders as $order) {
+            $rows[] = [
+                // 🔑 keys
+                'user_id'         => $sync->user_id,
+                'marketplace_id'  => $sync->marketplace_id,
+                'amazon_order_id' => $order['amazon_order_id'],
+
+                // 🧾 basic data
+                'merchant_order_id' => $order['merchant_order_id'] ?? null,
+                'purchase_date'     => $order['purchase_date'] ?? null,
+                'last_updated_date' => $order['last_updated_date'] ?? null,
+
+                'order_status' => $order['order_status'] ?? 'Unknown',
+                'items_status' => 'pending',
+
+                // 📦 meta
+                'order_type'          => $order['order_type'] ?? null,
+                'fulfillment_channel' => $order['fulfillment_channel'] ?? null,
+                'sales_channel'       => $order['sales_channel'] ?? null,
+                'payment_method'      => $order['payment_method'] ?? null,
+
+                // 🧠 json
+                'payment_method_details_json' => $order['payment_method_details_json'] ?? null,
+                'buyer_info_json'             => $order['buyer_info_json'] ?? null,
+                'raw_order_json'              => $order['raw_order_json'] ?? null,
+
+                // 🚨 NOT NULL flags (КРИТИЧНО)
+                'is_business_order' => (int) ($order['is_business_order'] ?? 0),
+                'is_iba'            => (int) ($order['is_iba'] ?? 0),
+
+                // ⏱ timestamps
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+        }
+
+        DB::transaction(function () use ($rows, $sync) {
+
+            if (! empty($rows)) {
+                DB::table('orders')->upsert(
+                    $rows,
+                    ['user_id', 'marketplace_id', 'amazon_order_id'],
                     [
-                        'marketplace_id'  => $sync->marketplace_id,
-                        'amazon_order_id' => $order['amazon_order_id'],
-                    ],
-                    [
-                        'user_id'        => $sync->user_id,
-                        'order_status'   => $order['order_status'] ?? 'Unknown',
-                        'raw_order_json' => $order['raw_order_json'],
-                        'updated_at'     => now(),
-                        'created_at'     => now(),
+                        'order_status',
+                        'last_updated_date',
+                        'raw_order_json',
+                        'updated_at',
                     ]
                 );
-                $imported++;
             }
 
             DB::table('orders_sync')
                 ->where('id', $sync->id)
                 ->update([
-                    'status'          => 'completed',
-                    'orders_fetched'  => count($orders),
-                    'imported_count'  => $imported,
-                    'finished_at'     => now(),
-                    'updated_at'      => now(),
+                    'status'         => 'completed',
+                    'orders_fetched' => count($rows),
+                    'imported_count' => count($rows),
+                    'finished_at'    => now(),
+                    'updated_at'     => now(),
                 ]);
         });
+
+        /////////////////////////////////////////////////////////////
 
         return true;
     }
