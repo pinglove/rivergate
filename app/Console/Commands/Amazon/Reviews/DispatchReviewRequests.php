@@ -42,21 +42,23 @@ class DispatchReviewRequests extends Command
          |--------------------------------------------------------------------------
          | 1) Eligible orders (ORDER-first)
          |--------------------------------------------------------------------------
-         | Conditions:
+         | We select orders ONLY inside ACTIVE AMAZON WINDOW by delivery date:
+         |   delivery <= now
+         |   delivery >= now - 25 days   (because 30 day max, and we need at least 5 days after delivery)
+         |
+         | Also must have:
          | - order_status = Shipped
          | - latest_delivery_date IS NOT NULL
-         | - has at least one ASIN with enabled review settings
-         | - user delay passed (delivery + delay_days <= now OR in future)
+         | - at least one ASIN with enabled review settings
          | - NOT already in review_request_queue
-         |
-         | Amazon hard gate:
-         | - now <= delivery + 30 days   (otherwise DEAD, never enqueue)
          |
          | We also select:
          | - trigger_asin (deterministic, MIN)
          | - MIN(delay_days / process_hour) for earliest scheduling
          |--------------------------------------------------------------------------
          */
+
+        $windowStart = $now->copy()->subDays(25);
 
         $rows = DB::table('orders as o')
             ->join('orders_items as oi', function ($j) {
@@ -76,18 +78,11 @@ class DispatchReviewRequests extends Command
             ->where('o.order_status', 'Shipped')
             ->whereNotNull('o.latest_delivery_date')
 
-            // Amazon hard upper bound: >30 days since delivery => never enqueue
-            ->whereRaw(
-                'DATE_ADD(o.latest_delivery_date, INTERVAL 30 DAY) >= ?',
-                [$now]
-            )
+            // ✅ ACTIVE AMAZON WINDOW (delivery-based):
+            ->where('o.latest_delivery_date', '<=', $now)
+            ->where('o.latest_delivery_date', '>=', $windowStart)
 
-            // User delay must have passed OR will be scheduled into future
-            ->whereRaw(
-                'DATE_ADD(o.latest_delivery_date, INTERVAL rrs.delay_days DAY) <= DATE_ADD(?, INTERVAL 30 DAY)',
-                [$now]
-            )
-
+            // ✅ Not already queued
             ->whereNotExists(function ($q) {
                 $q->select(DB::raw(1))
                   ->from('review_request_queue as q')
@@ -117,6 +112,8 @@ class DispatchReviewRequests extends Command
             ->get();
 
         if ($debug) {
+            $this->line('window_start=' . $windowStart->toDateTimeString());
+            $this->line('window_end=' . $now->toDateTimeString());
             $this->line('eligible_orders=' . $rows->count());
         }
 
@@ -147,15 +144,18 @@ class DispatchReviewRequests extends Command
                 $amazonMin = $delivery->copy()->addDays(5);
                 $amazonMax = $delivery->copy()->addDays(30);
 
+                $delayDays   = (int) ($row->delay_days ?? 0);
+                $processHour = (int) ($row->process_hour ?? 0);
+
                 // Base user intention
                 $runAfter = $delivery
                     ->copy()
-                    ->addDays((int) $row->delay_days)
-                    ->setHour((int) ($row->process_hour ?? 0))
+                    ->addDays($delayDays)
+                    ->setHour($processHour)
                     ->setMinute(0)
                     ->setSecond(0);
 
-                // Clamp to Amazon window
+                // ✅ Clamp to Amazon window (5..30 days after delivery)
                 if ($runAfter->lt($amazonMin)) {
                     if ($debug) {
                         $this->line(
@@ -163,7 +163,7 @@ class DispatchReviewRequests extends Command
                         );
                     }
                     $runAfter = $amazonMin->copy()
-                        ->setHour((int) ($row->process_hour ?? 0))
+                        ->setHour($processHour)
                         ->setMinute(0)
                         ->setSecond(0);
                 }
@@ -203,7 +203,7 @@ class DispatchReviewRequests extends Command
                     $inserted++;
                     if ($debug) {
                         $this->line(
-                            "queued order={$row->amazon_order_id} asin={$asin} run_after={$runAfter}"
+                            "queued order={$row->amazon_order_id} asin={$asin} delivery={$delivery} run_after={$runAfter}"
                         );
                     }
                 } else {
