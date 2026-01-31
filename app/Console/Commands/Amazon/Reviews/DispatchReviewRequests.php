@@ -156,10 +156,9 @@ class DispatchReviewRequests extends Command
                             "bump order={$row->amazon_order_id} from {$runAfter} to amazon_min {$amazonMin}"
                         );
                     }
-                    $runAfter = $amazonMin->copy()
-                        ->setHour($processHour)
-                        ->setMinute(0)
-                        ->setSecond(0);
+
+                    // Amazon window > user process_hour
+                    $runAfter = $amazonMin->copy();
                 }
 
                 if ($runAfter->gt($amazonMax)) {
