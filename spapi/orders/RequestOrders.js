@@ -31,12 +31,23 @@ function jsonOut(obj) {
   console.log(JSON.stringify(obj));
 }
 
-function toIsoZ(v) {
+function toIsoZ(v, { endOfDay = false } = {}) {
   if (!v) return null;
+
+  // YYYY-MM-DD (date only)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    return endOfDay
+      ? `${v}T23:59:59Z`
+      : `${v}T00:00:00Z`;
+  }
+
+  // full datetime
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return null;
+
   return d.toISOString().replace('.000', '');
 }
+
 
 function toMysqlDatetime(v) {
   if (!v) return null;
@@ -64,8 +75,8 @@ async function main() {
   const fromDate = getArg('from');
   const toDate   = getArg('to');
 
-  const fromIso = toIsoZ(fromDate);
-  const toIso   = toIsoZ(toDate);
+  const fromIso = toIsoZ(fromDate, { endOfDay: false });
+  const toIso   = toIsoZ(toDate,   { endOfDay: true  });
 
   const lwaRefreshToken   = (getArg('lwa_refresh_token') || '').trim();
   const lwaClientId       = (getArg('lwa_client_id') || '').trim();
