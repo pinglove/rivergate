@@ -174,8 +174,16 @@ class OrdersSyncWorker extends Command
             'spapi/orders/RequestOrders.js',
             '--request_id=' . $sync->id,
             '--marketplace_id=' . $marketplace->amazon_id,
-            '--from=' . Carbon::parse($sync->from_date)->toDateString(),
-            '--to=' . Carbon::parse($sync->to_date)->toDateString(),
+            //'--from=' . Carbon::parse($sync->from_date)->toDateString(),
+            //'--to=' . Carbon::parse($sync->to_date)->toDateString(),
+            '--from=' . Carbon::parse($sync->from_date)
+                ->startOfDay()
+                ->toIso8601String(),
+
+            '--to=' . Carbon::parse($sync->to_date)
+                ->endOfDay()
+                ->toIso8601String(),
+
             '--lwa_refresh_token=' . $token->lwa_refresh_token,
             '--lwa_client_id=' . $token->lwa_client_id,
             '--lwa_client_secret=' . $token->lwa_client_secret,
