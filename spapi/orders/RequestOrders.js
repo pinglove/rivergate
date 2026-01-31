@@ -22,6 +22,19 @@ dotenv.config({
 });
 
 // ---------- helpers ----------
+function clampBeforeNowMinus2Min(iso) {
+  if (!iso) return null;
+
+  const nowMinus2 = Date.now() - 2 * 60 * 1000;
+  const t = Date.parse(iso);
+
+  if (Number.isNaN(t)) return iso;
+
+  return t > nowMinus2
+    ? new Date(nowMinus2).toISOString().replace('.000', '')
+    : iso;
+}
+
 function getArg(name) {
   const arg = process.argv.find(a => a.startsWith(`--${name}=`));
   return arg ? arg.split('=').slice(1).join('=') : null;
@@ -76,7 +89,10 @@ async function main() {
   const toDate   = getArg('to');
 
   const fromIso = toIsoZ(fromDate, { endOfDay: false });
-  const toIso   = toIsoZ(toDate,   { endOfDay: true  });
+
+  let toIsoRaw = toIsoZ(toDate, { endOfDay: true });
+  const toIso  = clampBeforeNowMinus2Min(toIsoRaw);
+
 
   const lwaRefreshToken   = (getArg('lwa_refresh_token') || '').trim();
   const lwaClientId       = (getArg('lwa_client_id') || '').trim();
